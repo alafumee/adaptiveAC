@@ -29,21 +29,21 @@ You can find all scripted/human demo for simulated environments [here](https://d
 
     conda create -n aloha python=3.8.10
     conda activate aloha
-    pip install torchvision
-    pip install torch
-    pip install pyquaternion
-    pip install pyyaml
-    pip install rospkg
-    pip install pexpect
-    pip install mujoco==2.3.7
-    pip install dm_control==1.0.14
-    pip install opencv-python
-    pip install matplotlib
-    pip install einops
-    pip install packaging
-    pip install h5py
-    pip install ipython
-    cd act/detr && pip install -e .
+    uv pip install torchvision
+    uv pip install torch
+    uv pip install pyquaternion
+    uv pip install pyyaml
+    uv pip install rospkg
+    uv pip install pexpect
+    uv pip install mujoco==2.3.7
+    uv pip install dm_control==1.0.14
+    uv pip install opencv-python
+    uv pip install matplotlib
+    uv pip install einops
+    uv pip install packaging
+    uv pip install h5py
+    uv pip install ipython
+    cd act/detr && uv pip install -e .
 
 ### Example Usages
 
@@ -68,7 +68,7 @@ To visualize the episode after it is collected, run
     python3 visualize_episodes.py --dataset_dir <data save dir> --episode_idx 0
 
 To train ACT:
-    
+
     # Transfer Cube task
     python3 imitate_episodes.py \
     --task_name sim_transfer_cube_scripted \

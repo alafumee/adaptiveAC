@@ -1,4 +1,7 @@
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision.transforms as transforms
 import numpy as np
 import os
 import pickle
@@ -7,22 +10,43 @@ import matplotlib.pyplot as plt
 from copy import deepcopy
 from tqdm import tqdm
 from einops import rearrange
+from torchvision.models import resnet18, ResNet18_Weights
 
 from constants import DT
 from constants import PUPPET_GRIPPER_JOINT_OPEN
 from utils import load_data # data functions
 from utils import sample_box_pose, sample_insertion_pose # robot functions
 from utils import compute_dict_mean, set_seed, detach_dict # helper functions
-from policy import ACTPolicy, CNNMLPPolicy
+from policy import ACTPolicy, CNNMLPPolicy, Predict_Model
 from visualize_episodes import save_videos
 
+from detr.models.transformer import Transformer
+from detr.models.backbone import build_backbone
+
+
+import wandb
 from sim_env import BOX_POSE
 
 import IPython
 e = IPython.embed
+import subprocess
+def get_free_gpu():
+    try:
+        output = subprocess.check_output(['nvidia-smi', '--query-gpu=memory.used,memory.total', '--format=csv,nounits,noheader'])
+        lines = output.decode('utf-8').strip().split('\n')
+        gpu_memory = [list(map(int, line.split(','))) for line in lines]
+        free_memory_percentage = [(total - used) / total * 100 for used, total in gpu_memory]
+        most_free_gpu = free_memory_percentage.index(max(free_memory_percentage))
+        print(f"Selected GPU {most_free_gpu} with {free_memory_percentage[most_free_gpu]:.2f}% free memory")
+        return most_free_gpu
+    except Exception as e:
+        print(f"Error selecting GPU: {e}")
+        return 0  # Default to GPU 0 if there's an error
 
 def main(args):
-    set_seed(1)
+    # set_seed(1)
+    seed = args['seed']
+    set_seed(seed)
     # command line parameters
     is_eval = args['eval']
     ckpt_dir = args['ckpt_dir']
@@ -41,6 +65,9 @@ def main(args):
     else:
         from aloha_scripts.constants import TASK_CONFIGS
         task_config = TASK_CONFIGS[task_name]
+    # print(is_sim)
+    # print(task_config)
+    # exit(0)
     dataset_dir = task_config['dataset_dir']
     num_episodes = task_config['num_episodes']
     episode_len = task_config['episode_len']
@@ -56,7 +83,9 @@ def main(args):
         nheads = 8
         policy_config = {'lr': args['lr'],
                          'num_queries': args['chunk_size'],
+                         'query_freq': args['query_freq'],
                          'kl_weight': args['kl_weight'],
+                         'decay_rate': args['decay_rate'],
                          'hidden_dim': args['hidden_dim'],
                          'dim_feedforward': args['dim_feedforward'],
                          'lr_backbone': lr_backbone,
@@ -72,6 +101,7 @@ def main(args):
     else:
         raise NotImplementedError
 
+    ckpt_dir = args['ckpt_dir'] + '_decay_' + str(args['decay_rate'])
     config = {
         'num_epochs': num_epochs,
         'ckpt_dir': ckpt_dir,
@@ -100,7 +130,7 @@ def main(args):
         print()
         exit()
 
-    train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val)
+    train_dataloader, val_dataloader, train_dataloader_prediction, val_dataloader_prediction, stats, _ = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val)
 
     # save dataset stats
     if not os.path.isdir(ckpt_dir):
@@ -109,7 +139,48 @@ def main(args):
     with open(stats_path, 'wb') as f:
         pickle.dump(stats, f)
 
-    best_ckpt_info = train_bc(train_dataloader, val_dataloader, config)
+
+    # best_ckpt_info = train_prediction(train_dataloader_prediction, val_dataloader_prediction, config)
+    # best_epoch, min_val_loss, best_state_dict = best_ckpt_info
+    # # save best checkpoint
+    # ckpt_path = os.path.join(ckpt_dir, f'prediction_model_best.ckpt')
+    # torch.save(best_state_dict, ckpt_path)
+    # print(f'Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}')
+
+
+    ###################load prediction model
+    # predict_model_dir = '/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2_decay_1/prediction_best_model.ckpt'
+    predict_model_dir = '/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2_decay_1/prediction_model_epoch_1900_seed_1.ckpt'
+    predict_model = make_predict_model(config['policy_config'])
+    predict_model.load_state_dict(torch.load(predict_model_dir))
+    predict_model.cuda()
+
+    # Evaluate the prediction model
+    predict_model.eval()
+    with torch.no_grad():
+        val_loss = 0
+        num_batches = 0
+        for batch in val_dataloader_prediction:
+            image_data, image_rep, qpos_data, action_data, is_pad = batch
+            image_data, image_rep, qpos_data, action_data, is_pad = image_data.cuda(), image_rep.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
+
+            _ ,L = predict_model(qpos_data, image_data, image_rep, is_pad)
+            val_loss += L['loss']
+            num_batches += 1
+
+        avg_val_loss = val_loss / num_batches
+        print(f"Prediction model validation loss: {avg_val_loss:.5f}")
+        # wandb.log({"prediction_model/val_loss": avg_val_loss})
+
+    # Log other metrics if available in L
+    # for key, value in L.items():
+    #     if key != 'loss':
+    #         wandb.log({f"prediction_model/{key}": value.item()})
+
+    print("Prediction model evaluation completed.")
+    ####################
+
+    best_ckpt_info = train_bc(train_dataloader_prediction, val_dataloader_prediction, config, predict_model)
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
 
     # save best checkpoint
@@ -118,15 +189,36 @@ def main(args):
     print(f'Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}')
 
 
+    ### eval best ckpt
+    ckpt_names = [f'policy_best.ckpt']
+    results = []
+    for ckpt_name in ckpt_names:
+        success_rate, avg_return = eval_bc(config, ckpt_name, save_episode=True)
+        results.append([ckpt_name, success_rate, avg_return])
+        wandb.log({"best/success_rate": success_rate})
+        wandb.log({"best/avg_return": avg_return})
+
+    for ckpt_name, success_rate, avg_return in results:
+        print(f'{ckpt_name}: {success_rate=} {avg_return=}')
+    print()
+    exit()
+
+
 def make_policy(policy_class, policy_config):
+    print(policy_config, "policy_config")
+    # exit(0)
     if policy_class == 'ACT':
         policy = ACTPolicy(policy_config)
     elif policy_class == 'CNNMLP':
         policy = CNNMLPPolicy(policy_config)
     else:
         raise NotImplementedError
+    # exit(0)
     return policy
 
+def make_predict_model(policy_config):
+    model = Predict_Model(policy_config)
+    return model
 
 def make_optimizer(policy_class, policy):
     if policy_class == 'ACT':
@@ -165,6 +257,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
     # load policy and stats
     ckpt_path = os.path.join(ckpt_dir, ckpt_name)
     policy = make_policy(policy_class, policy_config)
+
     loading_status = policy.load_state_dict(torch.load(ckpt_path))
     print(loading_status)
     policy.cuda()
@@ -192,6 +285,10 @@ def eval_bc(config, ckpt_name, save_episode=True):
     if temporal_agg:
         query_frequency = 1
         num_queries = policy_config['num_queries']
+    else:
+        query_frequency = policy_config['query_freq']
+    ## yuyue add param here
+
 
     max_timesteps = int(max_timesteps * 1) # may increase for real-world tasks
 
@@ -247,6 +344,8 @@ def eval_bc(config, ckpt_name, save_episode=True):
                 if config['policy_class'] == "ACT":
                     if t % query_frequency == 0:
                         all_actions = policy(qpos, curr_image)
+                        print(all_actions.shape, "all_actions")
+                        exit(0)
                     if temporal_agg:
                         all_time_actions[[t], t:t+num_queries] = all_actions
                         actions_for_curr_step = all_time_actions[:, t]
@@ -288,12 +387,18 @@ def eval_bc(config, ckpt_name, save_episode=True):
         episode_highest_reward = np.max(rewards)
         highest_rewards.append(episode_highest_reward)
         print(f'Rollout {rollout_id}\n{episode_return=}, {episode_highest_reward=}, {env_max_reward=}, Success: {episode_highest_reward==env_max_reward}')
-
+        wandb.log({"rollout/episode_return": episode_return})
+        wandb.log({"rollout/episode_highest_reward": episode_highest_reward})
+        wandb.log({"rollout/success": episode_highest_reward==env_max_reward})
         if save_episode:
-            save_videos(image_list, DT, video_path=os.path.join(ckpt_dir, f'video{rollout_id}.mp4'))
+            save_videos(image_list, DT, video_path=os.path.join(ckpt_dir, f'video{rollout_id}.mp4'),gif_path=os.path.join(ckpt_dir, f'video{rollout_id}.gif'))
+            wandb.log({"rollout/video": wandb.Video(os.path.join(ckpt_dir, f'video{rollout_id}.mp4'))})
+            # wandb.log({"rollout/gif": wandb.Video(os.path.join(ckpt_dir, f'video{rollout_id}.gif'))})
 
     success_rate = np.mean(np.array(highest_rewards) == env_max_reward)
     avg_return = np.mean(episode_returns)
+    wandb.log({"rollout/success_rate": success_rate})
+    wandb.log({"rollout/avg_return": avg_return})
     summary_str = f'\nSuccess rate: {success_rate}\nAverage return: {avg_return}\n\n'
     for r in range(env_max_reward+1):
         more_or_equal_r = (np.array(highest_rewards) >= r).sum()
@@ -303,7 +408,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
     print(summary_str)
 
     # save success rate to txt
-    result_file_name = 'result_' + ckpt_name.split('.')[0] + '.txt'
+    result_file_name = 'result_' + ckpt_name.split('.')[0] + '_query_freq_' + str(policy_config['query_freq']) + '_temporal_agg_' + str(temporal_agg) + '.txt'
     with open(os.path.join(ckpt_dir, result_file_name), 'w') as f:
         f.write(summary_str)
         f.write(repr(episode_returns))
@@ -313,13 +418,19 @@ def eval_bc(config, ckpt_name, save_episode=True):
     return success_rate, avg_return
 
 
-def forward_pass(data, policy):
-    image_data, qpos_data, action_data, is_pad = data
+def forward_pass_wo_prediction(data, policy):
+    image_data, _, qpos_data, action_data, is_pad = data
     image_data, qpos_data, action_data, is_pad = image_data.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
     return policy(qpos_data, image_data, action_data, is_pad) # TODO remove None
 
+def forward_pass_with_prediction(data, policy,model):
+    image_data, image_features, qpos_data, action_data, is_pad = data
+    image_data, qpos_data, image_features, action_data, is_pad = image_data.cuda(), qpos_data.cuda(), image_features.cuda(), action_data.cuda(), is_pad.cuda()
+    return policy(qpos_data, image_data, action_data, is_pad, model,image_features)
+# def eval_from_policy(policy):
 
-def train_bc(train_dataloader, val_dataloader, config):
+
+def train_bc(train_dataloader, val_dataloader, config, predict_model):
     num_epochs = config['num_epochs']
     ckpt_dir = config['ckpt_dir']
     seed = config['seed']
@@ -343,7 +454,7 @@ def train_bc(train_dataloader, val_dataloader, config):
             policy.eval()
             epoch_dicts = []
             for batch_idx, data in enumerate(val_dataloader):
-                forward_dict = forward_pass(data, policy)
+                forward_dict = forward_pass_with_prediction(data, policy, predict_model)
                 epoch_dicts.append(forward_dict)
             epoch_summary = compute_dict_mean(epoch_dicts)
             validation_history.append(epoch_summary)
@@ -353,9 +464,11 @@ def train_bc(train_dataloader, val_dataloader, config):
                 min_val_loss = epoch_val_loss
                 best_ckpt_info = (epoch, min_val_loss, deepcopy(policy.state_dict()))
         print(f'Val loss:   {epoch_val_loss:.5f}')
+        wandb.log({"val_loss": epoch_val_loss})
         summary_string = ''
         for k, v in epoch_summary.items():
             summary_string += f'{k}: {v.item():.3f} '
+            wandb.log({k: v.item()})
         print(summary_string)
 
         # training
@@ -372,6 +485,7 @@ def train_bc(train_dataloader, val_dataloader, config):
         epoch_summary = compute_dict_mean(train_history[(batch_idx+1)*epoch:(batch_idx+1)*(epoch+1)])
         epoch_train_loss = epoch_summary['loss']
         print(f'Train loss: {epoch_train_loss:.5f}')
+        wandb.log({"train_loss": epoch_train_loss})
         summary_string = ''
         for k, v in epoch_summary.items():
             summary_string += f'{k}: {v.item():.3f} '
@@ -412,24 +526,107 @@ def plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed):
         plt.savefig(plot_path)
     print(f'Saved plots to {ckpt_dir}')
 
+def train_prediction(train_dataloader, val_dataloader, config):
+    num_epochs = config['num_epochs']
+    ckpt_dir = config['ckpt_dir']
+    seed = config['seed']
+    # policy_class = config['policy_class']
+    policy_config = config['policy_config']
+
+    set_seed(seed)
+
+    model = make_predict_model(policy_config)
+    model.cuda()
+    optimizer = model.configure_optimizers()
+
+    min_val_loss = np.inf
+    best_ckpt_info = None
+    train_history = []
+    validation_history = []
+    for epoch in tqdm(range(num_epochs)):
+        # validation
+        with torch.inference_mode():
+            model.eval()
+            epoch_dicts = []
+            for batch_idx, data in enumerate(val_dataloader):
+                image_data, image_rep, qpos_data, action_data, is_pad = data
+                image_data, image_rep, qpos_data, action_data, is_pad = image_data.cuda(), image_rep.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
+                L = model(qpos_data, image_data, image_rep, is_pad)
+                epoch_dicts.append(L)
+
+            epoch_summary = compute_dict_mean(epoch_dicts)
+
+            epoch_val_loss = epoch_summary['loss']
+            if epoch_val_loss < min_val_loss:
+                min_val_loss = epoch_val_loss
+                best_ckpt_info = (epoch, min_val_loss, deepcopy(model.state_dict()))
+        print(f'Val loss:   {epoch_val_loss:.5f}')
+        wandb.log({"Prediction/val_loss": epoch_val_loss})
+        summary_string = ''
+        for k, v in epoch_summary.items():
+            summary_string += f'{k}: {v.item():.3f} '
+            wandb.log({f"Prediction/{k}": v.item()})
+
+
+        optimizer.zero_grad()
+        for batch_idx, data in enumerate(train_dataloader):
+            image_data, image_rep, qpos_data, action_data, is_pad = data
+            image_data, image_rep, qpos_data, action_data, is_pad = image_data.cuda(), image_rep.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
+            # loss.backward()
+            # print(image_data.shape, image_rep.shape, qpos_data.shape, action_data.shape, is_pad.shape,end=" shapes of image_data, image_rep, qpos_data, action_data, is_pad\n")
+            _, L = model(qpos_data, image_data, image_rep, is_pad)
+            loss = L['loss']
+            # print(loss.item(), "loss\n")
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+            train_history.append(detach_dict(L))
+        epoch_summary = compute_dict_mean(train_history[(batch_idx+1)*epoch:(batch_idx+1)*(epoch+1)])
+        epoch_train_loss = epoch_summary['loss']
+        print(f'Train loss: {epoch_train_loss:.5f}')
+        wandb.log({"Prediction/train_loss": epoch_train_loss})
+        summary_string = ''
+        for k, v in epoch_summary.items():
+            summary_string += f'{k}: {v.item():.3f} '
+            wandb.log({f"Prediction/{k}": v.item()})
+        print(summary_string)
+        # Save the model after each epoch
+        if epoch % 100 == 0:
+            ckpt_path = os.path.join(ckpt_dir, f'prediction_model_epoch_{epoch}_seed_{seed}.ckpt')
+            torch.save(model.state_dict(), ckpt_path)
+
+    ckpt_path = os.path.join(ckpt_dir, f'prediction_model__last.ckpt')
+    torch.save(model.state_dict(), ckpt_path)
+
+    best_epoch, min_val_loss, best_state_dict = best_ckpt_info
+    ckpt_path = os.path.join(ckpt_dir, f'prediction_model_epoch_{best_epoch}_seed_{seed}.ckpt')
+    torch.save(best_state_dict, ckpt_path)
+    print(f'Training finished:\nSeed {seed}, val loss {min_val_loss:.6f} at epoch {best_epoch}')
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--eval', action='store_true')
-    parser.add_argument('--onscreen_render', action='store_true')
-    parser.add_argument('--ckpt_dir', action='store', type=str, help='ckpt_dir', required=True)
-    parser.add_argument('--policy_class', action='store', type=str, help='policy_class, capitalize', required=True)
-    parser.add_argument('--task_name', action='store', type=str, help='task_name', required=True)
-    parser.add_argument('--batch_size', action='store', type=int, help='batch_size', required=True)
-    parser.add_argument('--seed', action='store', type=int, help='seed', required=True)
-    parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
-    parser.add_argument('--lr', action='store', type=float, help='lr', required=True)
+    wandb.init()
+    config = wandb.config
+    selected_gpu = get_free_gpu()
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(selected_gpu)
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument('--eval', action='store_true')
+    # parser.add_argument('--onscreen_render', action='store_true')
+    # parser.add_argument('--ckpt_dir', action='store', type=str, help='ckpt_dir', required=True)
+    # parser.add_argument('--policy_class', action='store', type=str, help='policy_class, capitalize', required=True)
+    # parser.add_argument('--task_name', action='store', type=str, help='task_name', required=True)
+    # parser.add_argument('--batch_size', action='store', type=int, help='batch_size', required=True)
+    # parser.add_argument('--seed', action='store', type=int, help='seed', required=True)
+    # parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
+    # parser.add_argument('--lr', action='store', type=float, help='lr', required=True)
 
-    # for ACT
-    parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)
-    parser.add_argument('--chunk_size', action='store', type=int, help='chunk_size', required=False)
-    parser.add_argument('--hidden_dim', action='store', type=int, help='hidden_dim', required=False)
-    parser.add_argument('--dim_feedforward', action='store', type=int, help='dim_feedforward', required=False)
-    parser.add_argument('--temporal_agg', action='store_true')
-    
-    main(vars(parser.parse_args()))
+    # # for ACT
+    # parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)
+    # parser.add_argument('--chunk_size', action='store', type=int, help='chunk_size', required=False)
+    # parser.add_argument('--hidden_dim', action='store', type=int, help='hidden_dim', required=False)
+    # parser.add_argument('--dim_feedforward', action='store', type=int, help='dim_feedforward', required=False)
+    # parser.add_argument('--temporal_agg', action='store_true')
+    # print(vars(parser.parse_args()))
+    # print(config)
+    # exit(0)
+    # main(vars(parser.parse_args()))
+    main(config)

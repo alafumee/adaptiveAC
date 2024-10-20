@@ -49,6 +49,7 @@ class Transformer(nn.Module):
     def forward(self, src, mask, query_embed, pos_embed, latent_input=None, proprio_input=None, additional_pos_embed=None):
         # TODO flatten only when input has H and W
         if len(src.shape) == 4: # has H and W
+            # print(src.shape,end=" src\n")
             # flatten NxCxHxW to HWxNxC
             bs, c, h, w = src.shape
             src = src.flatten(2).permute(2, 0, 1)
@@ -58,9 +59,14 @@ class Transformer(nn.Module):
 
             additional_pos_embed = additional_pos_embed.unsqueeze(1).repeat(1, bs, 1) # seq, bs, dim
             pos_embed = torch.cat([additional_pos_embed, pos_embed], axis=0)
-
-            addition_input = torch.stack([latent_input, proprio_input], axis=0)
-            src = torch.cat([addition_input, src], axis=0)
+            if latent_input is not None and proprio_input is not None:
+                addition_input = torch.stack([latent_input, proprio_input], axis=0)
+                src = torch.cat([addition_input, src], axis=0)
+            if latent_input is None and proprio_input is not None:
+                # print("proprio_input",proprio_input.shape)
+                # print("src",src.shape)
+                addition_input = proprio_input.unsqueeze(0)
+                src = torch.cat([addition_input, src], axis=0)
         else:
             assert len(src.shape) == 3
             # flatten NxHWxC to HWxNxC
@@ -70,9 +76,13 @@ class Transformer(nn.Module):
             query_embed = query_embed.unsqueeze(1).repeat(1, bs, 1)
 
         tgt = torch.zeros_like(query_embed)
+        # print(tgt.shape,end=" tgt\n ????")
         memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
+        # print(src.shape,end=" src\n")
+        # print(memory.shape,end=" memory\n")
         hs = self.decoder(tgt, memory, memory_key_padding_mask=mask,
                           pos=pos_embed, query_pos=query_embed)
+        # print(hs.shape,end=" hs  after decoder\n")
         hs = hs.transpose(1, 2)
         return hs
 
@@ -117,7 +127,9 @@ class TransformerDecoder(nn.Module):
                 pos: Optional[Tensor] = None,
                 query_pos: Optional[Tensor] = None):
         output = tgt
-
+        # print(output.shape,end=" start ------\n")
+        # print(query_pos.shape,end=" query_pos\n")
+        # print(memory.shape,end=" memory\n")
         intermediate = []
 
         for layer in self.layers:
@@ -137,8 +149,8 @@ class TransformerDecoder(nn.Module):
 
         if self.return_intermediate:
             return torch.stack(intermediate)
-
-        return output.unsqueeze(0)
+        # print(output.shape ,end=" end ------\n")
+        return output
 
 
 class TransformerEncoderLayer(nn.Module):

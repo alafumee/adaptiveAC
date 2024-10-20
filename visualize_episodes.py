@@ -41,13 +41,14 @@ def main(args):
     # visualize_timestamp(t_list, dataset_path) # TODO addn timestamp back
 
 
-def save_videos(video, dt, video_path=None):
+def save_videos(video, dt, video_path=None, gif_path=None):
     if isinstance(video, list):
         cam_names = list(video[0].keys())
         h, w, _ = video[0][cam_names[0]].shape
         w = w * len(cam_names)
         fps = int(1/dt)
         out = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+        frames_for_gif = []
         for ts, image_dict in enumerate(video):
             images = []
             for cam_name in cam_names:
@@ -56,8 +57,14 @@ def save_videos(video, dt, video_path=None):
                 images.append(image)
             images = np.concatenate(images, axis=1)
             out.write(images)
+            frames_for_gif.append(images[:, :, [2, 1, 0]])  # Revert to RGB for GIF
         out.release()
         print(f'Saved video to: {video_path}')
+
+        # Create and save GIF
+        import imageio
+        imageio.mimsave(gif_path, frames_for_gif, fps=fps)
+        print(f'Saved GIF to: {gif_path}')
     elif isinstance(video, dict):
         cam_names = list(video.keys())
         all_cam_videos = []
@@ -68,12 +75,19 @@ def save_videos(video, dt, video_path=None):
         n_frames, h, w, _ = all_cam_videos.shape
         fps = int(1 / dt)
         out = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+        frames_for_gif = []
         for t in range(n_frames):
             image = all_cam_videos[t]
-            image = image[:, :, [2, 1, 0]]  # swap B and R channel
-            out.write(image)
+            image_bgr = image[:, :, [2, 1, 0]]  # swap B and R channel
+            out.write(image_bgr)
+            frames_for_gif.append(image)
         out.release()
         print(f'Saved video to: {video_path}')
+
+        # Create and save GIF
+        import imageio
+        imageio.mimsave(gif_path, frames_for_gif, fps=fps)
+        print(f'Saved GIF to: {gif_path}')
 
 
 def visualize_joints(qpos_list, command_list, plot_path=None, ylim=None, label_overwrite=None):

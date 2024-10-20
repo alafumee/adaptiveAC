@@ -1,0 +1,44 @@
+program: imitate_episodes.py
+method: grid
+
+parameters:
+  task_name:
+    # value: "sim_insertion_scripted"
+    value: "sim_transfer_cube_scripted"
+  policy_class:
+    value: "ACT"
+  kl_weight:
+    value: 10
+  decay_rate:
+    values: [1]
+  chunk_size:
+    values: [100]
+  ckpt_dir:
+    # value: "./ckpt/sim_insertion_scripted/Testchunk"
+    # value: "/localdata/yy/zzzzworkspace/act/ckpt/sim_insertion_human_chunk100"
+    value: "/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2"
+  hidden_dim:
+    value: 512
+  batch_size:
+    value: 8
+  dim_feedforward:
+    value: 3200
+  query_freq:
+    values: [100]
+  temporal_agg:
+    value: false
+  num_epochs:
+    value: 2000
+  lr:
+    value: 1e-5
+  seed:
+    values: [1]
+  eval:
+    value: false
+  onscreen_render:
+    value: false
+
+command:
+  - python3
+  - ${program}
+  - ${args_no_boolean_flags}

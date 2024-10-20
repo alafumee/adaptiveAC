@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from torch.autograd import Variable
 from .backbone import build_backbone
-from .transformer import build_transformer, TransformerEncoder, TransformerEncoderLayer
+from .transformer import build_transformer, TransformerEncoder, TransformerEncoderLayer , Transformer
 
 import numpy as np
 
@@ -56,6 +56,10 @@ class DETRVAE(nn.Module):
             self.input_proj = nn.Conv2d(backbones[0].num_channels, hidden_dim, kernel_size=1)
             self.backbones = nn.ModuleList(backbones)
             self.input_proj_robot_state = nn.Linear(14, hidden_dim)
+            print(self.backbones, backbones,end=" backbones\n")
+            # for param in self.backbones[0].parameters():
+            #     assert param.requires_grad == False
+                # print(param.requires_grad,end=" param\n")
         else:
             # input_dim = 14 + 7 # robot_state + env_state
             self.input_proj_robot_state = nn.Linear(14, hidden_dim)
@@ -83,6 +87,7 @@ class DETRVAE(nn.Module):
         actions: batch, seq, action_dim
         """
         is_training = actions is not None # train or val
+        print(qpos.shape, " qpos\n")
         bs, _ = qpos.shape
         ### Obtain latent z from action sequence
         if is_training:
@@ -112,7 +117,7 @@ class DETRVAE(nn.Module):
             mu = logvar = None
             latent_sample = torch.zeros([bs, self.latent_dim], dtype=torch.float32).to(qpos.device)
             latent_input = self.latent_out_proj(latent_sample)
-
+        print(latent_input.shape, "  latent_input\n")
         if self.backbones is not None:
             # Image observation features and position embeddings
             all_cam_features = []
@@ -122,20 +127,33 @@ class DETRVAE(nn.Module):
                 features = features[0] # take the last layer feature
                 pos = pos[0]
                 all_cam_features.append(self.input_proj(features))
+                print(features.shape, "  features\n")
+                print(all_cam_features[-1].shape, "  pos\n")
                 all_cam_pos.append(pos)
             # proprioception features
+            print(self.camera_names,end=" camera_names\n")
             proprio_input = self.input_proj_robot_state(qpos)
             # fold camera dimension into width dimension
             src = torch.cat(all_cam_features, axis=3)
             pos = torch.cat(all_cam_pos, axis=3)
+            print(src.shape, "  src\n")
+            print(pos.shape, "  pos\n")
+            print(latent_input.shape, "  latent_input\n")
+            print(proprio_input.shape, "  proprio_input\n")
+            print(self.additional_pos_embed.weight.shape, "  additional_pos_embed\n")
+            print(self.query_embed.weight.shape, "  query_embed\n")
+            print(self.transformer, "  transformer\n")
             hs = self.transformer(src, None, self.query_embed.weight, pos, latent_input, proprio_input, self.additional_pos_embed.weight)[0]
         else:
             qpos = self.input_proj_robot_state(qpos)
             env_state = self.input_proj_env_state(env_state)
             transformer_input = torch.cat([qpos, env_state], axis=1) # seq length = 2
+
             hs = self.transformer(transformer_input, None, self.query_embed.weight, self.pos.weight)[0]
         a_hat = self.action_head(hs)
         is_pad_hat = self.is_pad_head(hs)
+        print(hs.shape, "  hs\n")
+        print(a_hat.shape, "    a_hat\n")
         return a_hat, is_pad_hat, [mu, logvar]
 
 
@@ -276,3 +294,87 @@ def build_cnnmlp(args):
 
     return model
 
+class DynamicLatentModel(nn.Module):
+    def __init__(self, args):
+        super().__init__()
+        self.args = args
+        self.model = None
+        self.optimizer = None
+        self.latent_dim = 512
+        self.state_dim = 14
+        self.chunk_size = 100
+        self.transformer = Transformer(d_model=self.latent_dim,
+                                       nhead=8,
+                                       num_encoder_layers=4,
+                                       num_decoder_layers=7,
+                                       dim_feedforward=2048,
+                                       dropout=0.1,
+                                       activation="relu",
+                                       normalize_before=False)
+        self.camera_names = ['top']
+        # Embedding layer for state
+        self.embed = nn.Embedding(self.state_dim, self.latent_dim)
+        self.query_embed = nn.Embedding(self.chunk_size, self.latent_dim)
+        # Backbone
+        print(args, "args\n")
+        backbones = []
+        backbone = build_backbone(args)
+        backbones = [backbone]
+        self.backbones = nn.ModuleList(backbones)
+        self.input_proj = nn.Conv2d(self.backbones[0].num_channels, self.latent_dim, kernel_size=1)
+        self.input_proj_robot_state = nn.Linear(self.state_dim, self.latent_dim)
+
+        self.features_head = nn.Linear(self.latent_dim, self.backbones[0].num_channels)
+        # self.is_pad_head = nn.Linear(self.latent_dim, 1)
+        self.additional_pos_embed = nn.Embedding(1, self.latent_dim)
+
+    def forward(self, qpos, image):
+        ## input image, qpos
+        ## output: latent of chunk of images [batch_size, chunk_size, latent_dim]
+         # [batch_size, latent_dim]
+        all_cam_features = []
+        all_cam_pos = []
+        for cam_id, cam_name in enumerate(self.camera_names):
+            features, pos = self.backbones[0](image[:, cam_id]) # HARDCODED
+            features = features[0] # take the last layer feature
+            pos = pos[0]
+            all_cam_features.append(self.input_proj(features))
+            # print(features.shape, "  features\n")
+            # print(all_cam_features[-1].shape, "  pos\n")
+            all_cam_pos.append(pos)
+            # proprioception features
+        # print(self.camera_names,end=" camera_names\n")
+        proprio_input = self.input_proj_robot_state(qpos)
+        # fold camera dimension into width dimension
+        src = torch.cat(all_cam_features, axis=3)
+        pos = torch.cat(all_cam_pos, axis=3)
+        proprio_input = self.input_proj_robot_state(qpos)
+        # print(src.shape, "  src\n")
+        # print(pos.shape, "  pos\n")
+        # print(latent_input.shape, "  latent_input\n")
+        # print(proprio_input.shape, "  proprio_input\n")
+        # print(self.additional_pos_embed.weight.shape, "  additional_pos_embed\n")
+        # print(self.query_embed.weight.shape, "  query_embed\n")
+        # print(self.transformer, "  transformer\n")
+        hs = self.transformer(src, None, self.query_embed.weight, pos, None, proprio_input, self.additional_pos_embed.weight)
+        # print(hs.shape, " hs\n") # 100 512 8-> 8 100 512
+        hs = hs.permute(2, 0, 1)
+        features = self.features_head(hs)
+        return features
+    def get_features(self, image):
+        all_cam_features = []
+        all_cam_pos = []
+        for cam_id, cam_name in enumerate(self.camera_names):
+            features, pos = self.backbones[0](image[:, cam_id]) # HARDCODED
+            features = features[0] # take the last layer feature
+            pos = pos[0]
+            all_cam_features.append(self.input_proj(features))
+            all_cam_pos.append(pos)
+        src = torch.cat(all_cam_features, axis=3)
+        pos = torch.cat(all_cam_pos, axis=3)
+        feat = torch.nn.functional.adaptive_avg_pool2d(src, (1, 1)).squeeze(-1).squeeze(-1)
+        print(feat.shape, "feat")
+        return feat
+def build_prediction_model(args):
+    model = DynamicLatentModel(args)
+    return model

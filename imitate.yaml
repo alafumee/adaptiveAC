@@ -1,0 +1,48 @@
+program: imitate_episodes.py
+method: grid
+
+# --task_name sim_insertion_human --ckpt_dir './ckpt/sim_insertion_human_chunk200' --policy_class ACT --kl_weight 10 --chunk_size 200
+# --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 --num_epochs 2000  --lr 1e-5 --seed 0 --eval
+
+parameters:
+  task_name:
+    value: "sim_insertion_human"
+
+  ckpt_dir:
+    value: "./ckpt/sim_insertion_human_chunk200"
+
+  policy_class:
+    value: "ACTPolicy"
+
+  kl_weight:
+    value: 10
+
+  chunk_size:
+    value: 200
+
+  hidden_dim:
+    value: 512
+
+  batch_size:
+    value: 8
+
+  dim_feedforward:
+    value: 3200
+
+  num_epochs:
+    value: 2000
+
+  lr:
+    value: 1e-5
+
+  seed:
+    value: 0
+
+  eval:
+    value: False
+
+
+command:
+  - python3
+  - ${program}
+  - ${args}
