@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import torch.nn.functional as F
 import os
 import h5py
 from torch.utils.data import TensorDataset, DataLoader
@@ -126,6 +127,9 @@ class EpisodicDataset_prediction(torch.utils.data.Dataset):
                     with torch.no_grad():  # Disable gradient computation
                         image_rep = self.resnet(image_data)
                     image_rep = torch.amax(image_rep, dim=(-2, -1))
+                    # Normalize the image representation to have L2 norm of dim-1
+                    dim = image_rep.shape[-1]
+                    image_rep = F.normalize(image_rep, p=2, dim=-1) * (dim)**0.5
                     feature_dataset[i] = image_rep.cpu().numpy()
 
                     if i % 50 == 0:
@@ -329,6 +333,7 @@ def sample_insertion_pose():
 ### helper functions
 
 def compute_dict_mean(epoch_dicts):
+    # print(epoch_dicts,end=" epoch_dicts \n")
     result = {k: None for k in epoch_dicts[0]}
     num_items = len(epoch_dicts)
     for k in result:
@@ -347,4 +352,5 @@ def detach_dict(d):
 def set_seed(seed):
     torch.manual_seed(seed)
     np.random.seed(seed)
+
 

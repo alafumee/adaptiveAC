@@ -142,15 +142,14 @@ def main(args):
 
     # best_ckpt_info = train_prediction(train_dataloader_prediction, val_dataloader_prediction, config)
     # best_epoch, min_val_loss, best_state_dict = best_ckpt_info
-    # # save best checkpoint
+    # save best checkpoint
     # ckpt_path = os.path.join(ckpt_dir, f'prediction_model_best.ckpt')
     # torch.save(best_state_dict, ckpt_path)
     # print(f'Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}')
 
-
     ###################load prediction model
-    # predict_model_dir = '/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2_decay_1/prediction_best_model.ckpt'
-    predict_model_dir = '/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2_decay_1/prediction_model_epoch_1900_seed_1.ckpt'
+    predict_model_dir = '/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2_decay_1/prediction_best_model2.ckpt'
+    # predict_model_dir = '/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2_decay_1/prediction_model_epoch_1900_seed_1.ckpt'
     predict_model = make_predict_model(config['policy_config'])
     predict_model.load_state_dict(torch.load(predict_model_dir))
     predict_model.cuda()
@@ -242,6 +241,7 @@ def get_image(ts, camera_names):
 
 def eval_bc(config, ckpt_name, save_episode=True):
     set_seed(1000)
+    print("EVAL BC-----------------------------------\n")
     ckpt_dir = config['ckpt_dir']
     state_dim = config['state_dim']
     real_robot = config['real_robot']
@@ -344,8 +344,8 @@ def eval_bc(config, ckpt_name, save_episode=True):
                 if config['policy_class'] == "ACT":
                     if t % query_frequency == 0:
                         all_actions = policy(qpos, curr_image)
-                        print(all_actions.shape, "all_actions")
-                        exit(0)
+                        # print(all_actions.shape, "all_actions")
+                        # exit(0)
                     if temporal_agg:
                         all_time_actions[[t], t:t+num_queries] = all_actions
                         actions_for_curr_step = all_time_actions[:, t]
@@ -475,7 +475,7 @@ def train_bc(train_dataloader, val_dataloader, config, predict_model):
         policy.train()
         optimizer.zero_grad()
         for batch_idx, data in enumerate(train_dataloader):
-            forward_dict = forward_pass(data, policy)
+            forward_dict = forward_pass_with_prediction(data, policy, predict_model)
             # backward
             loss = forward_dict['loss']
             loss.backward()
@@ -551,20 +551,19 @@ def train_prediction(train_dataloader, val_dataloader, config):
             for batch_idx, data in enumerate(val_dataloader):
                 image_data, image_rep, qpos_data, action_data, is_pad = data
                 image_data, image_rep, qpos_data, action_data, is_pad = image_data.cuda(), image_rep.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
-                L = model(qpos_data, image_data, image_rep, is_pad)
+                _ ,L = model(qpos_data, image_data, image_rep, is_pad)
                 epoch_dicts.append(L)
-
             epoch_summary = compute_dict_mean(epoch_dicts)
 
             epoch_val_loss = epoch_summary['loss']
             if epoch_val_loss < min_val_loss:
                 min_val_loss = epoch_val_loss
                 best_ckpt_info = (epoch, min_val_loss, deepcopy(model.state_dict()))
-        print(f'Val loss:   {epoch_val_loss:.5f}')
+        print(f'Val loss:   {epoch_val_loss:.10f}')
         wandb.log({"Prediction/val_loss": epoch_val_loss})
         summary_string = ''
         for k, v in epoch_summary.items():
-            summary_string += f'{k}: {v.item():.3f} '
+            summary_string += f'{k}: {v.item():.10f} '
             wandb.log({f"Prediction/{k}": v.item()})
 
 
@@ -583,11 +582,11 @@ def train_prediction(train_dataloader, val_dataloader, config):
             train_history.append(detach_dict(L))
         epoch_summary = compute_dict_mean(train_history[(batch_idx+1)*epoch:(batch_idx+1)*(epoch+1)])
         epoch_train_loss = epoch_summary['loss']
-        print(f'Train loss: {epoch_train_loss:.5f}')
+        print(f'Train loss: {epoch_train_loss:.10f}')
         wandb.log({"Prediction/train_loss": epoch_train_loss})
         summary_string = ''
         for k, v in epoch_summary.items():
-            summary_string += f'{k}: {v.item():.3f} '
+            summary_string += f'{k}: {v.item():.10f} '
             wandb.log({f"Prediction/{k}": v.item()})
         print(summary_string)
         # Save the model after each epoch

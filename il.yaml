@@ -34,7 +34,7 @@ parameters:
   seed:
     values: [1]
   eval:
-    value: false
+    value: true
   onscreen_render:
     value: false
 
