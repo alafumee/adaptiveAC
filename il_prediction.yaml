@@ -40,8 +40,8 @@ parameters:
     value: false
   state_dim:
     value: 14
-  action_dim:
-    value: 14
+  action_dim:  # this ia actually predicted features
+    value: 512
 
 command:
   - python3

@@ -17,7 +17,7 @@ class Predict_Model(nn.Module):
     def configure_optimizers(self):
         return self.optimizer
 
-    def __call__(self, qpos, image, features=None, is_pad=None):
+    def __call__(self, qpos, image, features=None, is_pad=None, is_training=None):
         env_state = None
         normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                          std=[0.229, 0.224, 0.225])
@@ -50,6 +50,69 @@ class Predict_Model(nn.Module):
         #     a_hat, _, (_, _) = self.model(qpos, image, env_state) # no action, sample from prior
         #     return a_hat
         # return latent
+
+class VAEPredictionModel(nn.Module):
+    def __init__(self, args_override):
+        super().__init__()
+        model, optimizer = build_ACT_model_and_optimizer(args_override)
+        self.model = model # CVAE decoder
+        self.optimizer = optimizer
+        self.kl_weight = args_override['kl_weight']
+        self.decay_rate = args_override['decay_rate']
+        print(f'KL Weight {self.kl_weight}')
+
+    def __call__(self, qpos, image, future_features=None, is_pad=None, is_training=True):
+        env_state = None
+        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                         std=[0.229, 0.224, 0.225])
+        old_image = image
+        image = normalize(image)
+        if is_training: # training time
+            future_features = future_features[:, :self.model.num_queries]
+            if len(future_features.shape) == 4:
+                future_features = future_features.squeeze(2)
+            is_pad = is_pad[:, :self.model.num_queries]
+
+            feature_hat, is_pad_hat, (mu, logvar) = self.model(qpos, image, env_state, future_features, is_pad)
+            total_kld, dim_wise_kld, mean_kld = kl_divergence(mu, logvar)
+            loss_dict = dict()
+            # all_l1_with_decay
+            all_l2 = F.mse_loss(future_features, feature_hat, reduction='none')
+            ## add decay
+            # decay_factor = self.decay_rate ** torch.arange(all_l1.shape[-1], device=all_l1.device)
+            # if predict_model is not None:
+            #     with torch.inference_mode():
+            #         # predict_model(qpos_data, image_data, image_rep, is_pad)
+            #         loss, L = predict_model(qpos, old_image,image_features,is_pad)
+            #         loss = loss.sum(-1)
+            #         loss = (~is_pad) * loss
+            #         print(L['l2'], " l2\n")
+            #         print(loss.shape, " loss\n")
+            #         print(loss,end=" loss\n")
+            #         exit(0)
+
+
+            # else:
+            #     all_l1_with_decay = all_l1 * decay_factor
+
+
+            l2 = (all_l2 * ~is_pad.unsqueeze(-1)).mean()
+            ### end of add decay
+            loss_dict['l2'] = l2
+            loss_dict['kl'] = total_kld[0]
+            loss_dict['loss'] = loss_dict['l2'] + loss_dict['kl'] * self.kl_weight
+            return all_l2, loss_dict
+        else: # inference time
+            feature_hat, _, (_, _) = self.model(qpos, image, env_state) # no action, sample from prior
+            loss_dict = dict()
+            all_l2 = F.mse_loss(future_features, feature_hat, reduction='none')
+            l2 = (all_l2 * ~is_pad.unsqueeze(-1)).mean()
+            loss_dict['l2'] = l2
+            loss_dict['loss'] = loss_dict['l2']
+            return all_l2, loss_dict
+
+    def configure_optimizers(self):
+        return self.optimizer
 
 
 class ACTPolicy(nn.Module):

@@ -17,7 +17,7 @@ from constants import PUPPET_GRIPPER_JOINT_OPEN
 from utils import load_data # data functions
 from utils import sample_box_pose, sample_insertion_pose # robot functions
 from utils import compute_dict_mean, set_seed, detach_dict # helper functions
-from policy import ACTPolicy, CNNMLPPolicy, Predict_Model
+from policy import ACTPolicy, CNNMLPPolicy, Predict_Model, VAEPredictionModel
 from visualize_episodes import save_videos
 
 from detr.models.transformer import Transformer
@@ -94,6 +94,7 @@ def main(args):
                          'dec_layers': dec_layers,
                          'nheads': nheads,
                          'camera_names': camera_names,
+                         
                          }
     elif policy_class == 'CNNMLP':
         policy_config = {'lr': args['lr'], 'lr_backbone': lr_backbone, 'backbone' : backbone, 'num_queries': 1,
@@ -140,44 +141,44 @@ def main(args):
         pickle.dump(stats, f)
 
 
-    # best_ckpt_info = train_prediction(train_dataloader_prediction, val_dataloader_prediction, config)
-    # best_epoch, min_val_loss, best_state_dict = best_ckpt_info
-    # # save best checkpoint
-    # ckpt_path = os.path.join(ckpt_dir, f'prediction_model_best.ckpt')
-    # torch.save(best_state_dict, ckpt_path)
-    # print(f'Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}')
+    best_ckpt_info = train_prediction(train_dataloader_prediction, val_dataloader_prediction, config)
+    best_epoch, min_val_loss, best_state_dict = best_ckpt_info
+    # save best checkpoint
+    ckpt_path = os.path.join(ckpt_dir, f'prediction_model_best.ckpt')
+    torch.save(best_state_dict, ckpt_path)
+    print(f'Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}')
 
-
+    return 
     ###################load prediction model
-    # predict_model_dir = '/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2_decay_1/prediction_best_model.ckpt'
-    predict_model_dir = '/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2_decay_1/prediction_model_epoch_1900_seed_1.ckpt'
-    predict_model = make_predict_model(config['policy_config'])
-    predict_model.load_state_dict(torch.load(predict_model_dir))
-    predict_model.cuda()
+    # # predict_model_dir = '/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2_decay_1/prediction_best_model.ckpt'
+    # predict_model_dir = '/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2_decay_1/prediction_model_epoch_1900_seed_1.ckpt'
+    # predict_model = make_predict_model(config['policy_config'])
+    # predict_model.load_state_dict(torch.load(predict_model_dir))
+    # predict_model.cuda()
 
-    # Evaluate the prediction model
-    predict_model.eval()
-    with torch.no_grad():
-        val_loss = 0
-        num_batches = 0
-        for batch in val_dataloader_prediction:
-            image_data, image_rep, qpos_data, action_data, is_pad = batch
-            image_data, image_rep, qpos_data, action_data, is_pad = image_data.cuda(), image_rep.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
+    # # Evaluate the prediction model
+    # predict_model.eval()
+    # with torch.no_grad():
+    #     val_loss = 0
+    #     num_batches = 0
+    #     for batch in val_dataloader_prediction:
+    #         image_data, image_rep, qpos_data, action_data, is_pad = batch
+    #         image_data, image_rep, qpos_data, action_data, is_pad = image_data.cuda(), image_rep.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
 
-            _ ,L = predict_model(qpos_data, image_data, image_rep, is_pad)
-            val_loss += L['loss']
-            num_batches += 1
+    #         _ ,L = predict_model(qpos_data, image_data, image_rep, is_pad)
+    #         val_loss += L['loss']
+    #         num_batches += 1
 
-        avg_val_loss = val_loss / num_batches
-        print(f"Prediction model validation loss: {avg_val_loss:.5f}")
-        # wandb.log({"prediction_model/val_loss": avg_val_loss})
+    #     avg_val_loss = val_loss / num_batches
+    #     print(f"Prediction model validation loss: {avg_val_loss:.5f}")
+    #     # wandb.log({"prediction_model/val_loss": avg_val_loss})
 
-    # Log other metrics if available in L
-    # for key, value in L.items():
-    #     if key != 'loss':
-    #         wandb.log({f"prediction_model/{key}": value.item()})
+    # # Log other metrics if available in L
+    # # for key, value in L.items():
+    # #     if key != 'loss':
+    # #         wandb.log({f"prediction_model/{key}": value.item()})
 
-    print("Prediction model evaluation completed.")
+    # print("Prediction model evaluation completed.")
     ####################
 
     best_ckpt_info = train_bc(train_dataloader_prediction, val_dataloader_prediction, config, predict_model)
@@ -217,7 +218,8 @@ def make_policy(policy_class, policy_config):
     return policy
 
 def make_predict_model(policy_config):
-    model = Predict_Model(policy_config)
+    # model = Predict_Model(policy_config)
+    model = VAEPredictionModel(policy_config)
     return model
 
 def make_optimizer(policy_class, policy):
@@ -423,7 +425,7 @@ def forward_pass_wo_prediction(data, policy):
     image_data, qpos_data, action_data, is_pad = image_data.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
     return policy(qpos_data, image_data, action_data, is_pad) # TODO remove None
 
-def forward_pass_with_prediction(data, policy,model):
+def forward_pass_with_prediction(data, policy, model):
     image_data, image_features, qpos_data, action_data, is_pad = data
     image_data, qpos_data, image_features, action_data, is_pad = image_data.cuda(), qpos_data.cuda(), image_features.cuda(), action_data.cuda(), is_pad.cuda()
     return policy(qpos_data, image_data, action_data, is_pad, model,image_features)
@@ -551,7 +553,7 @@ def train_prediction(train_dataloader, val_dataloader, config):
             for batch_idx, data in enumerate(val_dataloader):
                 image_data, image_rep, qpos_data, action_data, is_pad = data
                 image_data, image_rep, qpos_data, action_data, is_pad = image_data.cuda(), image_rep.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
-                L = model(qpos_data, image_data, image_rep, is_pad)
+                _, L = model(qpos_data, image_data, image_rep, is_pad, is_training=False)
                 epoch_dicts.append(L)
 
             epoch_summary = compute_dict_mean(epoch_dicts)
@@ -574,7 +576,7 @@ def train_prediction(train_dataloader, val_dataloader, config):
             image_data, image_rep, qpos_data, action_data, is_pad = image_data.cuda(), image_rep.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
             # loss.backward()
             # print(image_data.shape, image_rep.shape, qpos_data.shape, action_data.shape, is_pad.shape,end=" shapes of image_data, image_rep, qpos_data, action_data, is_pad\n")
-            _, L = model(qpos_data, image_data, image_rep, is_pad)
+            _, L = model(qpos_data, image_data, image_rep, is_pad, is_training=True)
             loss = L['loss']
             # print(loss.item(), "loss\n")
             loss.backward()
@@ -606,6 +608,7 @@ def train_prediction(train_dataloader, val_dataloader, config):
 if __name__ == '__main__':
     wandb.init()
     config = wandb.config
+    config['seed'] = 42
     selected_gpu = get_free_gpu()
     os.environ["CUDA_VISIBLE_DEVICES"] = str(selected_gpu)
     # parser = argparse.ArgumentParser()
