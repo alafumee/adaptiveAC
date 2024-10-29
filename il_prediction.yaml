@@ -10,14 +10,13 @@ parameters:
   kl_weight:
     value: 10
   decay_rate:
-    values: [1,0.99,0.98,0.97,0.96,0.94,0.92,0.9]
+    values: [1]
   chunk_size:
     values: [100]
   ckpt_dir:
-    value: "/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run3"
     # value: "./ckpt/sim_insertion_scripted/Testchunk"
     # value: "/localdata/yy/zzzzworkspace/act/ckpt/sim_insertion_human_chunk100"
-    # value: "/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2"
+    value: "/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2"
     # value: "/home/yunzhezh/adaptiveAC/wandb_ckpt/vae_transfer_cube"
   hidden_dim:
     value: 512
@@ -26,7 +25,7 @@ parameters:
   dim_feedforward:
     value: 3200
   query_freq:
-    values: [100,60,40,20,5,1]
+    values: [100]
   temporal_agg:
     value: false
   num_epochs:
@@ -36,15 +35,13 @@ parameters:
   seed:
     values: [1]
   eval:
-    value: true
-  onscreen_render:
     value: false
-  use_predict_model:
+  onscreen_render:
     value: false
   state_dim:
     value: 14
-  action_dim:
-    value: 14
+  action_dim:  # this ia actually predicted features
+    value: 512
 
 command:
   - python3

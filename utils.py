@@ -225,6 +225,135 @@ class EpisodicDataset_prediction(torch.utils.data.Dataset):
 
         return image_data, features_data, qpos_data, action_data, is_pad
 
+
+
+# class EpisodicDatasetPredictionFullFeature(torch.utils.data.Dataset):
+#     def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats, args):
+#         super().__init__()
+#         self.episode_ids = episode_ids
+#         self.dataset_dir = dataset_dir
+#         self.camera_names = camera_names
+#         self.norm_stats = norm_stats
+#         self.is_sim = None
+
+#         self.resnet = Resnet(args).cuda()
+#         self.episode_len = 400
+#         from tqdm import tqdm
+#         for episode_id in tqdm(episode_ids):
+#             print(f"Processing episode {episode_id}")
+#             if os.path.exists(os.path.join(self.dataset_dir, f'resnet_features_episode_{episode_id}.hdf5')):
+#                 continue
+#             dataset_path = os.path.join(self.dataset_dir, f'episode_{episode_id}.hdf5')
+#             feature_file_path = os.path.join(self.dataset_dir, f'resnet_features_episode_{episode_id}.hdf5')
+
+#             with h5py.File(dataset_path, 'r') as root, h5py.File(feature_file_path, 'w') as f_out:
+#                 # Create a dataset to store the features
+#                 feature_shape = (self.episode_len, len(self.camera_names), self.resnet.backbones[0].num_channels)
+#                 feature_dataset = f_out.create_dataset('features', shape=feature_shape, dtype=np.float32)
+
+#                 for i in range(self.episode_len):
+#                     image_data = self.load_and_preprocess_image(root, i)
+#                     with torch.no_grad():  # Disable gradient computation
+#                         image_rep = self.resnet(image_data)
+#                         image_rep = torch.reshape(image_rep, (image_rep.shape[0], image_rep.shape[1], -1))
+#                     # image_rep = torch.amax(image_rep, dim=(-2, -1))
+#                     feature_dataset[i] = image_rep.cpu().numpy()
+
+#                     if i % 50 == 0:
+#                         print(f"Processed {i}/{self.episode_len} frames")
+
+#                     # Clear CUDA cache
+#                     torch.cuda.empty_cache()
+
+#                 # Add attributes to store metadata
+#                 f_out.attrs['episode_id'] = episode_id
+#                 f_out.attrs['feature_shape'] = feature_shape
+#                 f_out.attrs['camera_names'] = self.camera_names
+
+#             print(f"Features saved to {feature_file_path}")
+
+#         self.__getitem__(0)  # initialize self.is_sim
+
+#     def load_and_preprocess_image(self, root, index):
+#         image_dict = {cam_name: root[f'/observations/images/{cam_name}'][index:index+1]
+#                       for cam_name in self.camera_names}
+#         all_cam_images = np.stack([image_dict[cam_name] for cam_name in self.camera_names], axis=0)
+#         image_data = torch.from_numpy(all_cam_images).float() / 255.0
+#         image_data = torch.einsum('k t h w c -> k t c h w', image_data).cuda()
+#         return image_data
+
+#     def __len__(self):
+#         return len(self.episode_ids)
+
+#     def __getitem__(self, index):
+#         sample_full_episode = False # hardcode
+
+#         episode_id = self.episode_ids[index]
+#         dataset_path = os.path.join(self.dataset_dir, f'episode_{episode_id}.hdf5')
+#         feature_file_path = os.path.join(self.dataset_dir, f'features_episode_{episode_id}.hdf5')
+#         with h5py.File(dataset_path, 'r') as root, h5py.File(feature_file_path, 'r') as f_in:
+#             is_sim = root.attrs['sim']
+#             original_action_shape = root['/action'].shape
+#             episode_len = original_action_shape[0]
+#             if sample_full_episode:
+#                 start_ts = 0
+#             else:
+#                 start_ts = np.random.choice(episode_len)
+#             # get observation at start_ts only
+#             qpos = root['/observations/qpos'][start_ts]
+#             qvel = root['/observations/qvel'][start_ts]
+#             image_dict = dict()
+#             # print(self.camera_names,end=" camera names \n")
+#             for cam_name in self.camera_names:
+#                 image_dict[cam_name] = root[f'/observations/images/{cam_name}'][start_ts:start_ts+1]
+#             features = f_in['features'][start_ts:]
+#             # get all actions after and including start_ts
+#             if is_sim:
+#                 action = root['/action'][start_ts:]
+#                 action_len = episode_len - start_ts
+#             else:
+#                 action = root['/action'][max(0, start_ts - 1):] # hack, to make timesteps more aligned
+#                 action_len = episode_len - max(0, start_ts - 1) # hack, to make timesteps more aligned
+
+#         self.is_sim = is_sim
+#         padded_action = np.zeros(original_action_shape, dtype=np.float32)
+#         padded_features = np.zeros((self.episode_len,len(self.camera_names),self.resnet.backbones[0].num_channels),dtype=np.float32)
+#         padded_action[:action_len] = action
+#         padded_features[:action_len] = features
+#         is_pad = np.zeros(episode_len)
+#         is_pad[action_len:] = 1
+
+#         # new axis for different cameras
+#         all_cam_images = []
+#         for cam_name in self.camera_names:
+#             all_cam_images.append(image_dict[cam_name])
+#         all_cam_images = np.stack(all_cam_images, axis=0)
+
+#         # construct observations
+#         image_data = torch.from_numpy(all_cam_images)
+#         qpos_data = torch.from_numpy(qpos).float()
+#         action_data = torch.from_numpy(padded_action).float()
+#         is_pad = torch.from_numpy(is_pad).bool()
+#         features_data = torch.from_numpy(padded_features)
+#         image_data = image_data / 255.0
+#         # channel last
+#         # print(image_data.shape)
+#         image_data = torch.einsum('k t h w c -> k t c h w', image_data)
+#         image_data = image_data[:,0,:,:,:]
+#         # image_rep = self.resnet(image_data)
+#         # image_rep = torch.amax(image_rep, dim=(-2, -1))
+
+#         # normalize image and change dtype to float
+
+#         action_data = (action_data - self.norm_stats["action_mean"]) / self.norm_stats["action_std"]
+#         qpos_data = (qpos_data - self.norm_stats["qpos_mean"]) / self.norm_stats["qpos_std"]
+
+#         # print(image_data.shape,features_data.shape,qpos_data.shape,action_data.shape,end=" output shape \n")
+
+#         return image_data, features_data, qpos_data, action_data, is_pad
+
+
+
 def get_norm_stats(dataset_dir, num_episodes):
     all_qpos_data = []
     all_action_data = []
@@ -333,7 +462,7 @@ def sample_insertion_pose():
 ### helper functions
 
 def compute_dict_mean(epoch_dicts):
-    # print(epoch_dicts,end=" epoch_dicts \n")
+    print("epoch_dicts: ", epoch_dicts)
     result = {k: None for k in epoch_dicts[0]}
     num_items = len(epoch_dicts)
     for k in result:

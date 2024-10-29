@@ -67,6 +67,11 @@ def get_args_parser():
     ## newly added by yuyue
     parser.add_argument('--query_freq', action='store', type=int, help='query_freq', required=False)
     parser.add_argument('--decay_rate', action='store', type=float, help='decay_rate', required=False)
+    
+    # new
+    parser.add_argument('--state_dim', action='store', type=int, help='state_dim', required=False)
+    parser.add_argument('--action_dim', action='store', type=int, help='action_dim', required=False) 
+    
     return parser
 
 
