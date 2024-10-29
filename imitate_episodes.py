@@ -115,7 +115,8 @@ def main(args):
         'seed': args['seed'],
         'temporal_agg': args['temporal_agg'],
         'camera_names': camera_names,
-        'real_robot': not is_sim
+        'real_robot': not is_sim,
+        'use_predict_model': args['use_predict_model'],
     }
 
     if is_eval:
@@ -148,29 +149,31 @@ def main(args):
     # print(f'Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}')
 
     ###################load prediction model
-    predict_model_dir = '/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2_decay_1/prediction_best_model2.ckpt'
-    # predict_model_dir = '/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2_decay_1/prediction_model_epoch_1900_seed_1.ckpt'
-    predict_model = make_predict_model(config['policy_config'])
-    predict_model.load_state_dict(torch.load(predict_model_dir))
-    predict_model.cuda()
+    if args['use_predict_model']:
+        predict_model_dir = '/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2_decay_1/prediction_best_model2.ckpt'
+        # predict_model_dir = '/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2_decay_1/prediction_model_epoch_1900_seed_1.ckpt'
+        predict_model = make_predict_model(config['policy_config'])
+        predict_model.load_state_dict(torch.load(predict_model_dir))
+        predict_model.cuda()
 
-    # Evaluate the prediction model
-    predict_model.eval()
-    with torch.no_grad():
-        val_loss = 0
-        num_batches = 0
-        for batch in val_dataloader_prediction:
-            image_data, image_rep, qpos_data, action_data, is_pad = batch
-            image_data, image_rep, qpos_data, action_data, is_pad = image_data.cuda(), image_rep.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
+        # Evaluate the prediction model
+        predict_model.eval()
+        with torch.no_grad():
+            val_loss = 0
+            num_batches = 0
+            for batch in val_dataloader_prediction:
+                image_data, image_rep, qpos_data, action_data, is_pad = batch
+                image_data, image_rep, qpos_data, action_data, is_pad = image_data.cuda(), image_rep.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
 
-            _ ,L = predict_model(qpos_data, image_data, image_rep, is_pad)
-            val_loss += L['loss']
-            num_batches += 1
+                _ ,L = predict_model(qpos_data, image_data, image_rep, is_pad)
+                val_loss += L['loss']
+                num_batches += 1
 
-        avg_val_loss = val_loss / num_batches
-        print(f"Prediction model validation loss: {avg_val_loss:.5f}")
-        # wandb.log({"prediction_model/val_loss": avg_val_loss})
-
+            avg_val_loss = val_loss / num_batches
+            print(f"Prediction model validation loss: {avg_val_loss:.5f}")
+            # wandb.log({"prediction_model/val_loss": avg_val_loss})
+    else:
+        predict_model = None
     # Log other metrics if available in L
     # for key, value in L.items():
     #     if key != 'loss':
@@ -436,7 +439,7 @@ def train_bc(train_dataloader, val_dataloader, config, predict_model):
     seed = config['seed']
     policy_class = config['policy_class']
     policy_config = config['policy_config']
-
+    use_predict_model = config['use_predict_model']
     set_seed(seed)
 
     policy = make_policy(policy_class, policy_config)

@@ -87,7 +87,7 @@ class DETRVAE(nn.Module):
         actions: batch, seq, action_dim
         """
         is_training = actions is not None # train or val
-        print(qpos.shape, " qpos\n")
+        # print(qpos.shape, " qpos\n")
         bs, _ = qpos.shape
         ### Obtain latent z from action sequence
         if is_training:
@@ -117,7 +117,7 @@ class DETRVAE(nn.Module):
             mu = logvar = None
             latent_sample = torch.zeros([bs, self.latent_dim], dtype=torch.float32).to(qpos.device)
             latent_input = self.latent_out_proj(latent_sample)
-        print(latent_input.shape, "  latent_input\n")
+        # print(latent_input.shape, "  latent_input\n")
         if self.backbones is not None:
             # Image observation features and position embeddings
             all_cam_features = []
@@ -127,22 +127,22 @@ class DETRVAE(nn.Module):
                 features = features[0] # take the last layer feature
                 pos = pos[0]
                 all_cam_features.append(self.input_proj(features))
-                print(features.shape, "  features\n")
-                print(all_cam_features[-1].shape, "  pos\n")
+                # print(features.shape, "  features\n")
+                # print(all_cam_features[-1].shape, "  pos\n")
                 all_cam_pos.append(pos)
             # proprioception features
-            print(self.camera_names,end=" camera_names\n")
+            # print(self.camera_names,end=" camera_names\n")
             proprio_input = self.input_proj_robot_state(qpos)
             # fold camera dimension into width dimension
             src = torch.cat(all_cam_features, axis=3)
             pos = torch.cat(all_cam_pos, axis=3)
-            print(src.shape, "  src\n")
-            print(pos.shape, "  pos\n")
-            print(latent_input.shape, "  latent_input\n")
-            print(proprio_input.shape, "  proprio_input\n")
-            print(self.additional_pos_embed.weight.shape, "  additional_pos_embed\n")
-            print(self.query_embed.weight.shape, "  query_embed\n")
-            print(self.transformer, "  transformer\n")
+            # print(src.shape, "  src\n")
+            # print(pos.shape, "  pos\n")
+            # print(latent_input.shape, "  latent_input\n")
+            # print(proprio_input.shape, "  proprio_input\n")
+            # print(self.additional_pos_embed.weight.shape, "  additional_pos_embed\n")
+            # print(self.query_embed.weight.shape, "  ")
+            # print(self.transformer, "  transformer\n")
             hs = self.transformer(src, None, self.query_embed.weight, pos, latent_input, proprio_input, self.additional_pos_embed.weight)[0]
         else:
             qpos = self.input_proj_robot_state(qpos)
@@ -152,8 +152,8 @@ class DETRVAE(nn.Module):
             hs = self.transformer(transformer_input, None, self.query_embed.weight, self.pos.weight)[0]
         a_hat = self.action_head(hs)
         is_pad_hat = self.is_pad_head(hs)
-        print(hs.shape, "  hs\n")
-        print(a_hat.shape, "    a_hat\n")
+        # print(hs.shape, "  hs\n")
+        # print(a_hat.shape, "    a_hat\n")
         return a_hat, is_pad_hat, [mu, logvar]
 
 

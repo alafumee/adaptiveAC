@@ -78,7 +78,7 @@ class ACTPolicy(nn.Module):
             # all_l1_with_decay
             all_l1 = F.l1_loss(actions, a_hat, reduction='none')
             ## add decay
-            decay_factor = self.decay_rate ** torch.arange(all_l1.shape[-2], device=all_l1.device).unsqueeze(-1)
+            decay_factor = self.decay_rate ** torch.arange(all_l1.shape[-2], device=all_l1.device)
 
             if predict_model is not None:
                 with torch.inference_mode():
@@ -111,7 +111,10 @@ class ACTPolicy(nn.Module):
 
 
             else:
-                all_l1_with_decay = all_l1 * decay_factor
+                # print(all_l1.shape, " all_l1\n")
+                # print(decay_factor.shape, " decay_factor\n")
+                all_l1 = torch.einsum('bnd,n->bnd', all_l1, decay_factor)
+                # all_l1= all_l1 * decay_factor
 
 
             l1 = (all_l1 * ~is_pad.unsqueeze(-1)).mean()
