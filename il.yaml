@@ -14,9 +14,10 @@ parameters:
   chunk_size:
     values: [100]
   ckpt_dir:
+    value: "/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run3"
     # value: "./ckpt/sim_insertion_scripted/Testchunk"
     # value: "/localdata/yy/zzzzworkspace/act/ckpt/sim_insertion_human_chunk100"
-    value: "/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2"
+    # value: "/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2"
     # value: "/home/yunzhezh/adaptiveAC/wandb_ckpt/vae_transfer_cube"
   hidden_dim:
     value: 512
@@ -30,6 +31,8 @@ parameters:
     value: false
   num_epochs:
     value: 2000
+  num_epochs_prediction:
+    value: 1
   lr:
     value: 1e-5
   seed:
@@ -37,6 +40,8 @@ parameters:
   eval:
     value: false
   onscreen_render:
+    value: false
+  use_predict_model:
     value: false
   state_dim:
     value: 14

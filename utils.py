@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import torch.nn.functional as F
 import os
 import h5py
 from torch.utils.data import TensorDataset, DataLoader
@@ -126,6 +127,9 @@ class EpisodicDataset_prediction(torch.utils.data.Dataset):
                     with torch.no_grad():  # Disable gradient computation
                         image_rep = self.resnet(image_data)
                     image_rep = torch.amax(image_rep, dim=(-2, -1))
+                    # Normalize the image representation to have L2 norm of dim-1
+                    dim = image_rep.shape[-1]
+                    image_rep = F.normalize(image_rep, p=2, dim=-1) * (dim)**0.5
                     feature_dataset[i] = image_rep.cpu().numpy()
 
                     if i % 50 == 0:
@@ -220,9 +224,9 @@ class EpisodicDataset_prediction(torch.utils.data.Dataset):
         # print(image_data.shape,features_data.shape,qpos_data.shape,action_data.shape,end=" output shape \n")
 
         return image_data, features_data, qpos_data, action_data, is_pad
-    
-    
-    
+
+
+
 # class EpisodicDatasetPredictionFullFeature(torch.utils.data.Dataset):
 #     def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats, args):
 #         super().__init__()
@@ -477,4 +481,5 @@ def detach_dict(d):
 def set_seed(seed):
     torch.manual_seed(seed)
     np.random.seed(seed)
+
 
