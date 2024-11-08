@@ -94,7 +94,8 @@ def main(args):
                          'dec_layers': dec_layers,
                          'nheads': nheads,
                          'camera_names': camera_names,
-                         
+                         'state_dim': args['state_dim'],
+                         'action_dim': args['action_dim'], # manually override to 14 when making ACT
                          }
     elif policy_class == 'CNNMLP':
         policy_config = {'lr': args['lr'], 'lr_backbone': lr_backbone, 'backbone' : backbone, 'num_queries': 1,
@@ -181,6 +182,8 @@ def main(args):
     # print("Prediction model evaluation completed.")
     ####################
 
+    config['policy_config']['action_dim'] = 14
+    
     best_ckpt_info = train_bc(train_dataloader_prediction, val_dataloader_prediction, config, predict_model)
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
 
