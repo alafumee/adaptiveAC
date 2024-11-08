@@ -63,15 +63,17 @@ def get_args_parser():
     parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)
     parser.add_argument('--chunk_size', action='store', type=int, help='chunk_size', required=False)
     parser.add_argument('--temporal_agg', action='store_true')
+    parser.add_argument('--use_predict_model', action='store_true')
+    parser.add_argument('--num_epochs_prediction', action='store', type=int, help='num_epochs_prediction', required=False)
 
     ## newly added by yuyue
     parser.add_argument('--query_freq', action='store', type=int, help='query_freq', required=False)
     parser.add_argument('--decay_rate', action='store', type=float, help='decay_rate', required=False)
-    
+
     # new
     parser.add_argument('--state_dim', action='store', type=int, help='state_dim', required=False)
-    parser.add_argument('--action_dim', action='store', type=int, help='action_dim', required=False) 
-    
+    parser.add_argument('--action_dim', action='store', type=int, help='action_dim', required=False)
+
     return parser
 
 

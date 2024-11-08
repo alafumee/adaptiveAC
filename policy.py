@@ -103,8 +103,15 @@ class VAEPredictionModel(nn.Module):
             loss_dict['loss'] = loss_dict['l2'] + loss_dict['kl'] * self.kl_weight
             return all_l2, loss_dict
         else: # inference time
+            future_features = future_features[:, :self.model.num_queries]
+            if len(future_features.shape) == 4:
+                future_features = future_features.squeeze(2)
+            is_pad = is_pad[:, :self.model.num_queries]
             feature_hat, _, (_, _) = self.model(qpos, image, env_state) # no action, sample from prior
             loss_dict = dict()
+            # future_features = future_features.squeeze(-2)
+            print(future_features.shape, " future_features\n")
+            print(feature_hat.shape, " feature_hat\n")
             all_l2 = F.mse_loss(future_features, feature_hat, reduction='none')
             l2 = (all_l2 * ~is_pad.unsqueeze(-1)).mean()
             loss_dict['l2'] = l2
@@ -146,13 +153,20 @@ class ACTPolicy(nn.Module):
             if predict_model is not None:
                 with torch.inference_mode():
                     # predict_model(qpos_data, image_data, image_rep, is_pad)
-                    loss, L = predict_model(qpos, old_image,image_features,is_pad)
-                    loss = loss.sum(-1)
-                    # loss = (~is_pad) * loss
+                    # Compute weights w_i for each timestep i:
+                    # w_i = exp(-prediction_loss_i/(mean_prediction_loss) * 5)) * N / sum_j(exp(-prediction_loss_j/((mean_prediction_loss) * 5))) * mask_i
+                    # where prediction_loss_i is the prediction loss at timestep i
+                    # mean_i(prediction_loss) is the mean loss across timesteps for batch i
+                    # N is the sequence length
+                    # mask_i is the padding mask (1 for real data, 0 for padding)
 
+                    loss, L = predict_model(qpos, old_image,image_features,is_pad)
+                    loss = loss.sum(-1)  # Sum across feature dimensions
+
+                    # Compute normalized importance weights
                     weight = torch.exp(-loss / torch.mean(loss, dim=-1, keepdim=True) * 5)
                     weight = weight / weight.sum(dim=-1, keepdim=True) * loss.shape[-1]
-                    weight = weight * (~is_pad)
+                    weight = weight * (~is_pad)  # Zero out weights for padded timesteps
 
                 # Clone weight to create a normal tensor that can be used in autograd
                 weight = weight.clone().detach()

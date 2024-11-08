@@ -94,7 +94,7 @@ def main(args):
                          'dec_layers': dec_layers,
                          'nheads': nheads,
                          'camera_names': camera_names,
-
+                         'action_dim': 14,
                          }
     elif policy_class == 'CNNMLP':
         policy_config = {'lr': args['lr'], 'lr_backbone': lr_backbone, 'backbone' : backbone, 'num_queries': 1,
@@ -104,7 +104,7 @@ def main(args):
 
     ckpt_dir = args['ckpt_dir'] + '_decay_' + str(args['decay_rate'])
     config = {
-        'num_epochs': num_epochs,
+        'num_epochs': args['num_epochs_prediction'],
         'ckpt_dir': ckpt_dir,
         'episode_len': episode_len,
         'state_dim': state_dim,
@@ -141,20 +141,24 @@ def main(args):
     with open(stats_path, 'wb') as f:
         pickle.dump(stats, f)
 
+    config['policy_config']['action_dim'] = 512
+    predict_model = train_prediction(train_dataloader_prediction, val_dataloader_prediction, config)
+    config['policy_config']['action_dim'] = 14
+    # best_epoch, min_val_loss, best_state_dict = best_ckpt_info
+    # # save best checkpoint
+    # ckpt_path = os.path.join(ckpt_dir, f'prediction_model_best.ckpt')
+    # torch.save(best_state_dict, ckpt_path)
+    # print(f'Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}')
 
-    best_ckpt_info = train_prediction(train_dataloader_prediction, val_dataloader_prediction, config)
-    best_epoch, min_val_loss, best_state_dict = best_ckpt_info
-    # save best checkpoint
-    ckpt_path = os.path.join(ckpt_dir, f'prediction_model_best.ckpt')
-    torch.save(best_state_dict, ckpt_path)
-    print(f'Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}')
-
-    return
+    # return
     ###################load prediction model
     # # predict_model_dir = '/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2_decay_1/prediction_best_model.ckpt'
     # predict_model_dir = '/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2_decay_1/prediction_model_epoch_1900_seed_1.ckpt'
+    # predict_model_dir = '/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2_decay_1/prediction_model_epoch_1957_seed_1.ckpt'
+    # config['policy_config']['action_dim'] = 512
     # predict_model = make_predict_model(config['policy_config'])
     # predict_model.load_state_dict(torch.load(predict_model_dir))
+    # config['policy_config']['action_dim'] = 14
     # predict_model.cuda()
 
     # # Evaluate the prediction model
@@ -181,6 +185,10 @@ def main(args):
 
     # print("Prediction model evaluation completed.")
     ####################
+
+    # train policy
+    config['num_epochs'] = args['num_epochs']
+    # config['action_dim'] = 14
 
     best_ckpt_info = train_bc(train_dataloader_prediction, val_dataloader_prediction, config, predict_model)
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
@@ -396,7 +404,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
         wandb.log({"rollout/success": episode_highest_reward==env_max_reward})
         if save_episode:
             save_videos(image_list, DT, video_path=os.path.join(ckpt_dir, f'video{rollout_id}.mp4'),gif_path=os.path.join(ckpt_dir, f'video{rollout_id}.gif'))
-            wandb.log({"rollout/video": wandb.Video(os.path.join(ckpt_dir, f'video{rollout_id}.mp4'))})
+            # wandb.log({"rollout/video": wandb.Video(os.path.join(ckpt_dir, f'video{rollout_id}.mp4'))})
             # wandb.log({"rollout/gif": wandb.Video(os.path.join(ckpt_dir, f'video{rollout_id}.gif'))})
 
     success_rate = np.mean(np.array(highest_rewards) == env_max_reward)
@@ -605,6 +613,8 @@ def train_prediction(train_dataloader, val_dataloader, config):
     ckpt_path = os.path.join(ckpt_dir, f'prediction_model_epoch_{best_epoch}_seed_{seed}.ckpt')
     torch.save(best_state_dict, ckpt_path)
     print(f'Training finished:\nSeed {seed}, val loss {min_val_loss:.6f} at epoch {best_epoch}')
+
+    return model
 
 if __name__ == '__main__':
     wandb.init()

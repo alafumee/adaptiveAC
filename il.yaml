@@ -10,7 +10,7 @@ parameters:
   kl_weight:
     value: 10
   decay_rate:
-    values: [1,0.99,0.98,0.97,0.96,0.94,0.92,0.9]
+    values: [1]
   chunk_size:
     values: [100]
   ckpt_dir:
@@ -26,17 +26,19 @@ parameters:
   dim_feedforward:
     value: 3200
   query_freq:
-    values: [100,60,40,20,5,1]
+    values: [100]
   temporal_agg:
     value: false
   num_epochs:
     value: 2000
+  num_epochs_prediction:
+    value: 1
   lr:
     value: 1e-5
   seed:
     values: [1]
   eval:
-    value: true
+    value: false
   onscreen_render:
     value: false
   use_predict_model:
