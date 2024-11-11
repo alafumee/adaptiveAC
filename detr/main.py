@@ -73,6 +73,7 @@ def get_args_parser():
     # new
     parser.add_argument('--state_dim', action='store', type=int, help='state_dim', required=False)
     parser.add_argument('--action_dim', action='store', type=int, help='action_dim', required=False)
+    parser.add_argument('--prediction_ckpt_dir', action='store', type=str, help='prediction_ckpt_dir', required=False)
 
     return parser
 
@@ -99,14 +100,14 @@ def build_ACT_model_and_optimizer(args_override):
 
     return model, optimizer
 
-def build_ACT2_model_and_optimizer(args_override):
+def build_ACT2_model_and_optimizer(args_override, pred_model):
     parser = argparse.ArgumentParser('DETR training and evaluation script', parents=[get_args_parser()])
     args = parser.parse_args()
     for k, v in args_override.items():
         setattr(args, k, v)
     # print(args.backbone, "  args.backbone\n")
     # exit(0)
-    model = build_ACT2_model(args)
+    model = build_ACT2_model(args, pred_model)
     model.cuda()
 
     param_dicts = [

@@ -1,0 +1,6 @@
+**/*.ckpt
+data
+ckpt
+wandb_ckpt
+wandb
+.git

@@ -40,7 +40,7 @@ parameters:
   seed:
     values: [1, 2, 3, 4, 5]
   eval:
-    value: false
+    value: true
   onscreen_render:
     value: false
   use_predict_model:

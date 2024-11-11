@@ -50,6 +50,13 @@ class Predict_Model(nn.Module):
         #     a_hat, _, (_, _) = self.model(qpos, image, env_state) # no action, sample from prior
         #     return a_hat
         # return latent
+    
+    def get_features(self, qpos, image):
+        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                         std=[0.229, 0.224, 0.225])
+        image = normalize(image)
+        features_hat = self.model(qpos, image)
+        return features_hat
 
 class VAEPredictionModel(nn.Module):
     def __init__(self, args_override):
@@ -164,8 +171,10 @@ class ACTPolicy(nn.Module):
                     loss = loss.sum(-1)  # Sum across feature dimensions
 
                     # Compute normalized importance weights
-                    weight = torch.exp(-loss / torch.mean(loss, dim=-1, keepdim=True) * 5)
-                    weight = weight / weight.sum(dim=-1, keepdim=True) * loss.shape[-1]
+                    # weight = torch.exp(-loss / torch.mean(loss, dim=-1, keepdim=True) * 5)
+                    # weight = weight / weight.sum(dim=-1, keepdim=True) * loss.shape[-1]
+                    # weight = weight * (~is_pad)  # Zero out weights for padded timesteps
+                    weight = torch.exp(torch.exp(-loss * 0.01))
                     weight = weight * (~is_pad)  # Zero out weights for padded timesteps
 
                 # Clone weight to create a normal tensor that can be used in autograd
@@ -208,9 +217,9 @@ class ACTPolicy(nn.Module):
         return self.optimizer
     
 class ACTPolicy2(nn.Module):
-    def __init__(self, args_override):
+    def __init__(self, args_override, pred_model):
         super().__init__()
-        model, optimizer = build_ACT2_model_and_optimizer(args_override)
+        model, optimizer = build_ACT2_model_and_optimizer(args_override, pred_model)
         self.model = model # CVAE decoder
         self.optimizer = optimizer
         self.kl_weight = args_override['kl_weight']

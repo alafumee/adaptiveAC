@@ -103,7 +103,7 @@ def main(args):
     else:
         raise NotImplementedError
 
-    ckpt_dir = args['ckpt_dir'] + '_seed_' + str(seed)
+    ckpt_dir = args['ckpt_dir'] + '_decay_' + str(args['decay_rate'])
     config = {
         'num_epochs': args['num_epochs_prediction'],
         'ckpt_dir': ckpt_dir,
@@ -122,7 +122,6 @@ def main(args):
     }
 
     if is_eval:
-        print("EVAL MODE")
         ckpt_names = [f'policy_best.ckpt']
         results = []
         for ckpt_name in ckpt_names:
@@ -132,7 +131,7 @@ def main(args):
         for ckpt_name, success_rate, avg_return in results:
             print(f'{ckpt_name}: {success_rate=} {avg_return=}')
         print()
-        return
+        exit()
 
     train_dataloader, val_dataloader, train_dataloader_prediction, val_dataloader_prediction, stats, _ = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val)
 
@@ -145,10 +144,8 @@ def main(args):
 
     prediction_config = config.copy()
     prediction_config['policy_config']['action_dim'] = 512
-    prediction_ckpt_dir = prediction_config['ckpt_dir'] = args['prediction_ckpt_dir'] + '_seed_' + str(seed)
-    if not os.path.isdir(prediction_ckpt_dir):
-        os.makedirs(prediction_ckpt_dir)
-    best_ckpt_info = train_prediction(train_dataloader_prediction, val_dataloader_prediction, prediction_config)
+    prediction_config['ckpt_dir'] = args['prediction_ckpt_dir']
+    best_ckpt_info = train_prediction(train_dataloader_prediction, val_dataloader_prediction, config)
     # config['policy_config']['action_dim'] = 14
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
     # save best checkpoint
@@ -162,7 +159,7 @@ def main(args):
     # predict_model_dir = '/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2_decay_1/prediction_model_epoch_1900_seed_1.ckpt'
     # predict_model_dir = '/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2_decay_1/prediction_model_epoch_1957_seed_1.ckpt'
     # config['policy_config']['action_dim'] = 512
-    predict_model = make_predict_model(prediction_config['policy_config'])
+    predict_model = make_predict_model(config['policy_config'])
     predict_model.load_state_dict(best_state_dict)
     # config['policy_config']['action_dim'] = 14
     predict_model.cuda()
@@ -618,7 +615,7 @@ def train_prediction(train_dataloader, val_dataloader, config):
     torch.save(model.state_dict(), ckpt_path)
 
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
-    ckpt_path = os.path.join(ckpt_dir, f'best_prediction_model_epoch_{best_epoch}_seed_{seed}.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, f'prediction_model_epoch_{best_epoch}_seed_{seed}.ckpt')
     torch.save(best_state_dict, ckpt_path)
     print(f'Training finished:\nSeed {seed}, val loss {min_val_loss:.6f} at epoch {best_epoch}')
 

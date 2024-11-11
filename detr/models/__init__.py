@@ -12,5 +12,5 @@ def build_CNNMLP_model(args):
 def build_prediction_model(args):
     return build_P(args)
 
-def build_ACT2_model(args):
-    return build_act2(args)
+def build_ACT2_model(args, pred_model):
+    return build_act2(args, pred_model)
