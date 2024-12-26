@@ -21,6 +21,13 @@ def reparametrize(mu, logvar):
 
 
 def get_sinusoid_encoding_table(n_position, d_hid):
+    """
+    Sinusoid position encoding table
+    
+    Input: n_position, d_hid
+    
+    Output: torch.FloatTensor, shape=(1, n_position, d_hid)
+    """
     def get_position_angle_vec(position):
         return [position / np.power(10000, 2 * (hid_j // 2) / d_hid) for hid_j in range(d_hid)]
 
@@ -246,8 +253,7 @@ class DETRVAE_with_model(nn.Module):
         print(latent_input.shape, "  latent_input\n")
         if self.pred_model is not None:
             src = self.pred_model.get_features(qpos, image)
-            print("SRC_SHAPE: ", src.shape)
-            pos = get_sinusoid_encoding_table(1, src.shape[1])
+            pos = get_sinusoid_encoding_table(src.shape[1], src.shape[2]).squeeze(0).to(src.device)
             # Image observation features and position embeddings
             # all_cam_features = []
             # all_cam_pos = []
@@ -585,6 +591,7 @@ class SingleStepDynamicsModel(nn.Module):
         emb = np.exp(np.arange(half_dim) * -emb)
         emb = timesteps[:, None] * emb[None, :]
         emb = np.concatenate([np.sin(emb), np.cos(emb)], axis=-1)
+        return torch.tensor(emb, dtype=torch.float32).to(timesteps.device)
     
     def forward(self, qpos, image, env_state, timestep, future_feature=None, is_pad=None):
         """
@@ -694,5 +701,317 @@ def build_single_step_prediction_model(args):
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print("number of parameters in prediction model: %.2fM" % (n_parameters/1e6,))
+
+    return model
+
+class MINENetwork(nn.Module):
+    def __init__(self, action_dim, max_timestep=100, hidden_dim=256, backbone=None, state_dim=14, self_normalize=False):
+        # for now we do not use qpos
+        super(MINENetwork, self).__init__()
+        if backbone is not None:
+            self.backbone = backbone
+            self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
+        else:
+            import torchvision.models as models
+            pretrained_model = models.resnet18(weights='DEFAULT')
+            self.backbone = nn.Sequential(*list(pretrained_model.children())[:-2])
+            
+            self.input_proj = nn.Linear(512, hidden_dim)
+        # self.backbone = backbone
+        self.hidden_dim = hidden_dim
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.action_proj = nn.Linear(action_dim, hidden_dim)
+        self.qpos_proj = nn.Linear(state_dim, hidden_dim)
+        # self.output_proj = nn.Linear(hidden_dim, 1)
+        self.activation = nn.GELU()
+        self.output_proj = nn.Sequential(
+            nn.Linear(2 * hidden_dim, hidden_dim),
+            self.activation,
+            nn.Linear(hidden_dim, 1)
+        )
+        self.mlp = nn.Sequential(
+            nn.Linear(3 * hidden_dim, hidden_dim),
+            self.activation,
+            nn.Linear(hidden_dim, hidden_dim),
+            self.activation,
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+        self.query_token = nn.Parameter(torch.randn(hidden_dim,))
+        self.bias = nn.Parameter(torch.zeros(1))
+        self.max_timestep = max_timestep
+        self.self_normalize = self_normalize
+    
+    def timestep_embedding(self, timesteps, max_period=1000):
+        # use time embedding to encode timestep
+        device = timesteps.device
+        timesteps = timesteps.cpu().numpy()
+        half_dim = self.hidden_dim // 2
+        emb = np.log(max_period) / half_dim
+        emb = np.exp(np.arange(half_dim) * -emb)
+        emb = timesteps[:, None] * emb[None, :]
+        emb = np.concatenate([np.sin(emb), np.cos(emb)], axis=-1)
+        return torch.tensor(emb, dtype=torch.float32).to(device)
+    
+    def get_pos_embd_2d(self, height, width):
+        width_embedding = get_sinusoid_encoding_table(width, self.hidden_dim // 2).repeat(height, 1, 1)
+        height_embedding = get_sinusoid_encoding_table(height, self.hidden_dim // 2).repeat(width, 1, 1).transpose(0, 1)
+        return torch.cat([width_embedding, height_embedding], dim=-1)
+    
+    def get_mine_ouput(self, pooled_image_features, actions, timesteps, qpos=None):
+        action_features = self.action_proj(actions)
+        qpos_features = self.qpos_proj(qpos)
+        timestep_features = self.timestep_embedding(timesteps)
+        features = torch.cat([pooled_image_features, action_features, qpos_features], dim=-1)
+        obs_act_feat = self.mlp(features)
+        # print("---VAR---", torch.std(obs_act_feat, dim=0))
+        # print("---MEAN---", torch.mean(obs_act_feat, dim=0))
+        # print('-----SAMPLE_FEAT-----', obs_act_feat[0])
+        # print(f'-----SAMPLE_TIME{timesteps[0]}-----', timestep_features[0])
+        # mine_output = torch.einsum('bc, bc -> b', obs_act_feat, timestep_features) + self.bias
+        mine_output = self.output_proj(torch.cat([obs_act_feat, timestep_features], dim=-1))
+        # return mine_output.unsqueeze(-1)
+        return mine_output
+    
+    def get_mine_total_output(self, pooled_image_features, actions, qpos=None):
+        # get mine output for all timesteps
+        for ts in range(self.max_timestep):
+            timestep = torch.tensor([ts] * pooled_image_features.size(0)).to(pooled_image_features.device)
+            if ts == 0:
+                mine_output = self.get_mine_ouput(pooled_image_features, actions, timestep, qpos)
+            else:
+                mine_output = torch.cat([mine_output, self.get_mine_ouput(pooled_image_features, actions, timestep, qpos)], dim=-1)
+        return mine_output.unsqueeze(1) # bs, 1, len
+        
+    def forward(self, image, action, timestep, qpos=None, random_timestep=False, test_mode=False):
+        # image: bs, (1), c, h, w
+        # action: bs, action_dim
+        # timestep: bs, 
+        if len(image.size()) == 5:
+            image = image.squeeze(1)
+        if test_mode:
+            image = image[:1]
+            action = action[:1]
+            qpos = qpos[:1]
+            # true_timestep = timestep[0]
+            bs = image.size(0)
+            image_features = self.backbone(image).permute(0, 2, 3, 1) # bs, height, width, 512
+            image_features = self.input_proj(image_features)
+            image_pos_embd = self.get_pos_embd_2d(image_features.size(1), image_features.size(2)).unsqueeze(0).repeat(bs, 1, 1, 1).to(image.device)
+            attn_map = (image_pos_embd @ self.query_token).view(bs, -1) # bs, height*width
+            attn_weights = torch.softmax(attn_map, dim=-1)
+            pooled_image_features = torch.einsum('bnc, bn -> bc', image_features.view(bs, -1, self.hidden_dim), attn_weights)
+            for ts in range(self.max_timestep):
+                timestep = torch.tensor([ts] * image.size(0)).to(image.device)
+                if ts == 0:
+                    mine_output = self.get_mine_ouput(pooled_image_features, action, timestep, qpos)
+                else:
+                    mine_output = torch.cat([mine_output, self.get_mine_ouput(pooled_image_features, action, timestep, qpos)], dim=-1)
+            
+        else:
+            if random_timestep:
+                print(timestep)
+                timestep = torch.randint(0, self.max_timestep, (image.size(0),)).to(image.device)
+                print("----RESAMPLED TIMESTEP----", timestep)
+            bs = image.size(0)
+            image_features = self.backbone(image).permute(0, 2, 3, 1) # bs, height, width, 512
+            image_features = self.input_proj(image_features)
+            image_pos_embd = self.get_pos_embd_2d(image_features.size(1), image_features.size(2)).unsqueeze(0).repeat(bs, 1, 1, 1).to(image.device)
+            attn_map = (image_pos_embd @ self.query_token).view(bs, -1) # bs, height*width
+            attn_weights = torch.softmax(attn_map, dim=-1)
+            pooled_image_features = torch.einsum('bnc, bn -> bc', image_features.view(bs, -1, self.hidden_dim), attn_weights)
+            action_features = self.action_proj(action)
+            qpos_features = self.qpos_proj(qpos)
+            timestep_features = self.timestep_embedding(timestep)
+            features = torch.cat([pooled_image_features, action_features, qpos_features], dim=-1)
+            obs_act_feat = self.mlp(features)
+            # diff = obs_act_feat - timestep_features
+            # mine_output = self.output_proj(diff)
+            # mine_output = torch.einsum('bc, bc -> b', obs_act_feat, timestep_features) + self.bias
+            mine_output = self.output_proj(torch.cat([obs_act_feat, timestep_features], dim=-1))
+            
+        return mine_output#, obs_act_feat
+    
+    def forward_sequence(self, image, action_sequence, qpos=None):
+        # perform MINE on a single image with each of the actions in the sequence
+        # image: bs, (1), c, h, w
+        # action: bs, len, action_dim
+        if len(image.size()) == 5:
+            image = image.squeeze(1)
+        bs = image.size(0)
+        image_features = self.backbone(image).permute(0, 2, 3, 1) # bs, height, width, 512
+        image_features = self.input_proj(image_features)
+        image_pos_embd = self.get_pos_embd_2d(image_features.size(1), image_features.size(2)).unsqueeze(0).repeat(bs, 1, 1, 1).to(image.device)
+        attn_map = (image_pos_embd @ self.query_token).view(bs, -1) # bs, height*width
+        attn_weights = torch.softmax(attn_map, dim=-1)
+        pooled_image_features = torch.einsum('bnc, bn -> bc', image_features.view(bs, -1, self.hidden_dim), attn_weights)
+        if self.self_normalize:
+            for ts in range(action_sequence.size(1)):
+                action = action_sequence[:, ts]
+                # ts_tensor = torch.tensor([ts] * bs).to(image.device)
+                # if ts == 0:
+                #     mine_output = self.get_mine_ouput(pooled_image_features, action, ts_tensor, qpos)
+                # else:
+                #     mine_output = torch.cat([mine_output, self.get_mine_ouput(pooled_image_features, action, ts_tensor, qpos)], dim=-1)
+                if ts == 0:
+                    mine_output = self.get_mine_total_output(pooled_image_features, action, qpos) # bs, 1, len
+                else:
+                    mine_output = torch.cat([mine_output, self.get_mine_total_output(pooled_image_features, action, qpos)], dim=1)
+        else:
+            for ts in range(action_sequence.size(1)):
+                action = action_sequence[:, ts]
+                ts_tensor = torch.tensor([ts] * bs).to(image.device)
+                if ts == 0:
+                    mine_output = self.get_mine_ouput(pooled_image_features, action, ts_tensor, qpos)
+                else:
+                    mine_output = torch.cat([mine_output, self.get_mine_ouput(pooled_image_features, action, ts_tensor, qpos)], dim=-1)
+        return mine_output # bs, len, len or bs, len
+
+
+class MINENetwork_old(nn.Module):
+    def __init__(self, action_dim, max_timestep=100, hidden_dim=256, backbone=None, state_dim=14):
+        # for now we do not use qpos
+        super(MINENetwork_old, self).__init__()
+        if backbone is not None:
+            self.backbone = backbone
+            self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
+        else:
+            import torchvision.models as models
+            pretrained_model = models.resnet18(weights='DEFAULT')
+            self.backbone = nn.Sequential(*list(pretrained_model.children())[:-2])
+            
+            self.input_proj = nn.Linear(512, hidden_dim)
+        # self.backbone = backbone
+        self.hidden_dim = hidden_dim
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.action_proj = nn.Linear(action_dim, hidden_dim)
+        # self.qpos_proj = nn.Linear(state_dim, hidden_dim)
+        self.output_proj = nn.Linear(hidden_dim, 1)
+        self.activation = nn.GELU()
+        self.mlp = nn.Sequential(
+            nn.Linear(2 * hidden_dim, hidden_dim),
+            self.activation,
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+        # self.query_token = nn.Parameter(torch.randn(hidden_dim,))
+        # self.bias = nn.Parameter(torch.zeros(1))
+        self.max_timestep = max_timestep
+    
+    def timestep_embedding(self, timesteps, max_period=1000):
+        # use time embedding to encode timestep
+        device = timesteps.device
+        timesteps = timesteps.cpu().numpy()
+        half_dim = self.hidden_dim // 2
+        emb = np.log(max_period) / half_dim
+        emb = np.exp(np.arange(half_dim) * -emb)
+        emb = timesteps[:, None] * emb[None, :]
+        emb = np.concatenate([np.sin(emb), np.cos(emb)], axis=-1)
+        return torch.tensor(emb, dtype=torch.float32).to(device)
+    
+    def get_pos_embd_2d(self, height, width):
+        width_embedding = get_sinusoid_encoding_table(width, self.hidden_dim // 2).repeat(height, 1, 1)
+        height_embedding = get_sinusoid_encoding_table(height, self.hidden_dim // 2).repeat(width, 1, 1).transpose(0, 1)
+        return torch.cat([width_embedding, height_embedding], dim=-1)
+    
+    def get_mine_ouput(self, pooled_image_features, actions, timesteps, qpos=None):
+        action_features = self.action_proj(actions)
+        # qpos_features = self.qpos_proj(qpos)
+        timestep_features = self.timestep_embedding(timesteps)
+        features = torch.cat([pooled_image_features, action_features], dim=-1)
+        obs_act_feat = self.mlp(features)
+        diff = obs_act_feat - timestep_features
+        mine_output = self.output_proj(diff)
+        return mine_output
+    
+    def forward(self, image, action, timestep, qpos=None, random_timestep=False, test_mode=False):
+        # image: bs, (1), c, h, w
+        # action: bs, action_dim
+        # timestep: bs, 
+        if len(image.size()) == 5:
+            image = image.squeeze(1)
+        if test_mode:
+            image = image[:1]
+            action = action[:1]
+            true_timestep = timestep[0]
+            bs = image.size(0)
+            image_features = self.backbone(image).permute(0, 2, 3, 1) # bs, height, width, 512
+            image_features = self.input_proj(image_features)
+            image_pos_embd = self.get_pos_embd_2d(image_features.size(1), image_features.size(2)).unsqueeze(0).repeat(bs, 1, 1, 1).to(image.device)
+            image_features = image_features + image_pos_embd
+            pooled_image_features = torch.mean(image_features, dim=(1, 2))
+            for ts in range(self.max_timestep):
+                timestep = torch.tensor([ts] * image.size(0)).to(image.device)
+                if ts == 0:
+                    mine_output = self.get_mine_ouput(pooled_image_features, action, timestep)
+                else:
+                    mine_output = torch.cat([mine_output, self.get_mine_ouput(pooled_image_features, action, timestep)], dim=-1)
+            weights = torch.exp(mine_output)
+            print(f"TRUE{true_timestep}-----WEIGHTS for DIFFERENT TIMESTEPS-----", weights)
+            # import matplotlib.pyplot as plt
+            # plt.plot(weights.cpu().detach().numpy()[0])
+            # plt.xlabel("Timestep")
+            # plt.ylabel("Weight")
+            # plt.title("MINE weights")
+            # plt.savefig(f"mine_weights_{true_timestep}.png")
+        else:
+            if random_timestep:
+                print(timestep)
+                timestep = torch.randint(0, self.max_timestep, (image.size(0),)).to(image.device)
+                print("----RESAMPLED TIMESTEP----", timestep)
+            bs = image.size(0)
+            image_features = self.backbone(image).permute(0, 2, 3, 1) # bs, height, width, 512
+            image_features = self.input_proj(image_features)
+            image_pos_embd = self.get_pos_embd_2d(image_features.size(1), image_features.size(2)).unsqueeze(0).repeat(bs, 1, 1, 1).to(image.device)
+            image_features = image_features + image_pos_embd
+            pooled_image_features = torch.mean(image_features, dim=(1, 2))
+            action_features = self.action_proj(action)
+            timestep_features = self.timestep_embedding(timestep)
+            features = torch.cat([pooled_image_features, action_features], dim=-1)
+            obs_act_feat = self.mlp(features)
+            diff = obs_act_feat - timestep_features
+            mine_output = self.output_proj(diff)
+            # mine_output = torch.einsum('bc, bc -> b', obs_act_feat, timestep_features) + self.bias
+        return mine_output
+    
+    def forward_sequence(self, image, action_sequence, qpos=None):
+        # perform MINE on a single image with each of the actions in the sequence
+        # image: bs, (1), c, h, w
+        # action: bs, len, action_dim
+        if len(image.size()) == 5:
+            image = image.squeeze(1)
+        bs = image.size(0)
+        image_features = self.backbone(image).permute(0, 2, 3, 1) # bs, height, width, 512
+        image_features = self.input_proj(image_features)
+        image_pos_embd = self.get_pos_embd_2d(image_features.size(1), image_features.size(2)).unsqueeze(0).repeat(bs, 1, 1, 1).to(image.device)
+        image_features = image_features + image_pos_embd
+        pooled_image_features = torch.mean(image_features, dim=(1, 2))
+        for ts in range(action_sequence.size(1)):
+            action = action_sequence[:, ts]
+            ts_tensor = torch.tensor([ts] * bs).to(image.device)
+            if ts == 0:
+                mine_output = self.get_mine_ouput(pooled_image_features, action, ts_tensor)
+            else:
+                mine_output = torch.cat([mine_output, self.get_mine_ouput(pooled_image_features, action, ts_tensor)], dim=-1)
+        return mine_output # bs, len
+
+def build_MINE(args):
+    # state_dim = 14 # TODO hardcode
+
+    # From state
+    # backbone = None # from state for now, no need for conv nets
+    # From image
+    # backbone = build_backbone(args)
+    model = MINENetwork(
+        action_dim=args.action_dim,
+        hidden_dim=args.hidden_dim,
+        backbone=None,
+        state_dim=args.state_dim,
+        max_timestep=args.num_queries,
+        self_normalize=args.self_normalize
+    )
+
+    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print("number of parameters in MINE: %.2fM" % (n_parameters/1e6,))
 
     return model

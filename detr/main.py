@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from .models import build_ACT_model, build_CNNMLP_model,build_prediction_model, build_ACT2_model
+from .models import build_ACT_model, build_CNNMLP_model,build_prediction_model, build_ACT2_model, build_mine_model
 
 import IPython
 e = IPython.embed
@@ -67,13 +67,24 @@ def get_args_parser():
     parser.add_argument('--num_epochs_prediction', action='store', type=int, help='num_epochs_prediction', required=False)
 
     ## newly added by yuyue
-    parser.add_argument('--query_freq', action='store', type=int, help='query_freq', required=False)
+    parser.add_argument('--query_freq', action='store', type=int, help='query_freq', required=False) # chunk size at eval
     parser.add_argument('--decay_rate', action='store', type=float, help='decay_rate', required=False)
 
     # new
     parser.add_argument('--state_dim', action='store', type=int, help='state_dim', required=False)
     parser.add_argument('--action_dim', action='store', type=int, help='action_dim', required=False)
     parser.add_argument('--prediction_ckpt_dir', action='store', type=str, help='prediction_ckpt_dir', required=False)
+    parser.add_argument('--pred_weight', action='store', type=float, help='pred_weight', required=False)
+    parser.add_argument('--lr_pred', action='store', type=float, help='lr_pred', required=False)
+    parser.add_argument('--lr_mine', action='store', type=float, help='lr_mine', required=False)
+    parser.add_argument('--load_mine', action='store_true', required=False)
+    parser.add_argument('--reweight', action='store_true', required=False)
+    parser.add_argument('--mine_ckpt_dir', action='store', type=str, help='mine_ckpt_dir', required=False)
+    parser.add_argument('--num_epochs_mine', action='store', type=int, help='num_epochs_mine', required=False)
+    parser.add_argument('--mine_batch_size', action='store', type=int, help='mine_batch_size', required=False)
+    parser.add_argument('--load_mine_ckpt_path', action='store', type=str, help='load_mine_ckpt_dir', required=False)
+    parser.add_argument('--self_normalize_weight', action='store_true', required=False)
+    parser.add_argument('--weight_clip', action='store_false', help='weight_clip', required=False)
 
     return parser
 
@@ -108,10 +119,13 @@ def build_ACT2_model_and_optimizer(args_override, pred_model):
     # print(args.backbone, "  args.backbone\n")
     # exit(0)
     model = build_ACT2_model(args, pred_model)
+    print(model)
     model.cuda()
 
     param_dicts = [
-        {"params": [p for n, p in model.named_parameters() if "backbone" not in n and p.requires_grad]},
+        {"params": [p for n, p in model.named_parameters() if "pred_model" not in n and "backbone" not in n and p.requires_grad]},
+        {"params":[p for n, p in model.named_parameters() if "pred_model" in n and "backbone" not in n and p.requires_grad],
+         "lr": args.lr_backbone},
         {
             "params": [p for n, p in model.named_parameters() if "backbone" in n and p.requires_grad],
             "lr": args.lr_backbone,
@@ -161,5 +175,45 @@ def build_CNNMLP_model_and_optimizer(args_override):
     optimizer = torch.optim.AdamW(param_dicts, lr=args.lr,
                                   weight_decay=args.weight_decay)
 
+    return model, optimizer
+
+def build_MINE_model_and_optimizer(args_override):
+    parser = argparse.ArgumentParser('DETR training and evaluation script', parents=[get_args_parser()])
+    args = parser.parse_args()
+    for k, v in args_override.items():
+        setattr(args, k, v)
+    
+    model = build_mine_model(args)
+    model.cuda()
+    
+    param_dicts = [
+        {"params": [p for n, p in model.named_parameters() if "backbone" not in n and p.requires_grad]},
+        {
+            "params": [p for n, p in model.named_parameters() if "backbone" in n and p.requires_grad],
+            "lr": args.lr_backbone,
+        },
+    ]
+    
+    optimizer = torch.optim.AdamW(param_dicts, lr=args.lr,
+                                  weight_decay=args.weight_decay)
+    return model, optimizer
+
+def build_ACT_PMI_model_and_optimizer(args_override):
+    parser = argparse.ArgumentParser('DETR training and evaluation script', parents=[get_args_parser()])
+    args = parser.parse_args()
+    for k, v in args_override.items():
+        setattr(args, k, v)
+    model = build_ACT_model(args)
+    model.cuda()
+    
+    param_dicts = [
+        {"params": [p for n, p in model.named_parameters() if "backbone" not in n and p.requires_grad]},
+        {"params": [p for n, p in model.named_parameters() if "backbone" in n and p.requires_grad],
+         "lr": args.lr_backbone},
+    ]
+    
+    optimizer = torch.optim.AdamW(param_dicts, lr=args.lr,
+                                  weight_decay=args.weight_decay)
+    
     return model, optimizer
 

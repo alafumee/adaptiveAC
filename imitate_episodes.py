@@ -96,6 +96,7 @@ def main(args):
                          'camera_names': camera_names,
                          'state_dim': args['state_dim'],
                          'action_dim': args['action_dim'], # manually override to 14 when making ACT
+                         'reweight': args['reweight'],
                          }
     elif policy_class == 'CNNMLP':
         policy_config = {'lr': args['lr'], 'lr_backbone': lr_backbone, 'backbone' : backbone, 'num_queries': 1,

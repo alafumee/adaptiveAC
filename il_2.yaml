@@ -1,14 +1,16 @@
-program: imitate_episodes.py
+program: imitate_episodes_2.py
 method: grid
 
 parameters:
   task_name:
-    value: "sim_insertion_scripted"
-    # value: "sim_transfer_cube_scripted"
+    # value: "sim_insertion_scripted"
+    value: "sim_transfer_cube_scripted"
   policy_class:
-    value: "ACT"
+    value: "ACT2"
   kl_weight:
     value: 10
+  pred_weight:
+    value: 0.005
   decay_rate:
     values: [1]
   chunk_size:
@@ -18,9 +20,9 @@ parameters:
     # value: "./ckpt/sim_insertion_scripted/Testchunk"
     # value: "/localdata/yy/zzzzworkspace/act/ckpt/sim_insertion_human_chunk100"
     # value: "/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2"
-    value: "/home/torchuser/adaptiveAC/wandb_ckpt/vae_insertion_noreweight"
+    value: "/home/torchuser/adaptiveAC/wandb_ckpt/vae_transfer_cube"
   prediction_ckpt_dir:
-    value: "/home/torchuser/adaptiveAC/wandb_ckpt/vae_insertion_prediction_noreweight"
+    value: "/home/torchuser/adaptiveAC/wandb_ckpt/vae_transfer_cube_prediction"
   hidden_dim:
     value: 512
   batch_size:
@@ -34,11 +36,15 @@ parameters:
   num_epochs:
     value: 2000
   num_epochs_prediction:
-    value: 50
+    value: 5
   lr:
     value: 1e-5
+  lr_backbone:
+    value: 1e-6
+  lr_pred:
+    value: 1e-6
   seed:
-    values: [1, 2, 3, 4, 5]
+    values: [1]
   eval:
     value: false
   onscreen_render:
@@ -49,8 +55,6 @@ parameters:
     value: 14
   action_dim:
     value: 14
-  reweight:
-    value: false
 
 command:
   - python3

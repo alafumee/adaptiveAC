@@ -14,10 +14,10 @@ from torchvision.models import resnet18, ResNet18_Weights
 
 from constants import DT
 from constants import PUPPET_GRIPPER_JOINT_OPEN
-from utils import load_data # data functions
+from utils import load_data_MINE # data functions
 from utils import sample_box_pose, sample_insertion_pose # robot functions
 from utils import compute_dict_mean, set_seed, detach_dict # helper functions
-from policy import ACTPolicy, CNNMLPPolicy, Predict_Model, VAEPredictionModel, ACTPolicy2
+from policy import ACTPolicy_PMI, CNNMLPPolicy, Predict_Model, VAEPredictionModel, MINEEstimator
 from visualize_episodes import save_videos
 
 from detr.models.transformer import Transformer
@@ -55,7 +55,9 @@ def main(args):
     task_name = args['task_name']
     batch_size_train = args['batch_size']
     batch_size_val = args['batch_size']
+    mine_batch_size = args['mine_batch_size']
     num_epochs = args['num_epochs']
+    load_mine = args['load_mine']
 
     # get task parameters
     is_sim = task_name[:4] == 'sim_'
@@ -95,29 +97,10 @@ def main(args):
                          'nheads': nheads,
                          'camera_names': camera_names,
                          'state_dim': args['state_dim'],
-                         'action_dim': args['action_dim'], # manually override to 14 when making ACT
-                         }
-    elif policy_class == 'ACT2':
-        enc_layers = 4
-        dec_layers = 7
-        nheads = 8
-        policy_config = {'lr': args['lr'],
-                         'num_queries': args['chunk_size'],
-                         'query_freq': args['query_freq'],
-                         'kl_weight': args['kl_weight'],
-                         'decay_rate': args['decay_rate'],
-                         'hidden_dim': args['hidden_dim'],
-                         'dim_feedforward': args['dim_feedforward'],
-                         'lr_backbone': lr_backbone,
-                         'backbone': backbone,
-                         'enc_layers': enc_layers,
-                         'dec_layers': dec_layers,
-                         'nheads': nheads,
-                         'camera_names': camera_names,
-                         'state_dim': args['state_dim'],
-                         'action_dim': args['action_dim'], # manually override to 14 when making ACT
-                         'lr_pred': args['lr_pred'],
-                         'pred_weight': args['pred_weight'],
+                         'action_dim': args['action_dim'],
+                         'reweight': args['reweight'],
+                         'self_normalize': args['self_normalize_weight'],
+                         'weight_clip': args['weight_clip'],
                          }
     elif policy_class == 'CNNMLP':
         policy_config = {'lr': args['lr'], 'lr_backbone': lr_backbone, 'backbone' : backbone, 'num_queries': 1,
@@ -125,9 +108,9 @@ def main(args):
     else:
         raise NotImplementedError
 
-    ckpt_dir = args['ckpt_dir'] + '_decay_' + str(args['decay_rate'])
+    ckpt_dir = args['ckpt_dir'] + '_seed_' + str(seed)
     config = {
-        'num_epochs': args['num_epochs_prediction'],
+        'num_epochs': args['num_epochs_mine'],
         'ckpt_dir': ckpt_dir,
         'episode_len': episode_len,
         'state_dim': state_dim,
@@ -144,6 +127,7 @@ def main(args):
     }
 
     if is_eval:
+        print("EVAL MODE")
         ckpt_names = [f'policy_best.ckpt']
         results = []
         for ckpt_name in ckpt_names:
@@ -153,9 +137,9 @@ def main(args):
         for ckpt_name, success_rate, avg_return in results:
             print(f'{ckpt_name}: {success_rate=} {avg_return=}')
         print()
-        exit()
+        return
 
-    train_dataloader, val_dataloader, train_dataloader_prediction, val_dataloader_prediction, stats, _ = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val)
+    train_dataloader, val_dataloader, train_dataloader_mine, val_dataloader_mine, stats, _ = load_data_MINE(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, mine_batch_size, args['chunk_size'])
 
     # save dataset stats
     if not os.path.isdir(ckpt_dir):
@@ -164,16 +148,19 @@ def main(args):
     with open(stats_path, 'wb') as f:
         pickle.dump(stats, f)
 
-    prediction_config = config.copy()
-    prediction_config['policy_config']['action_dim'] = 512
-    prediction_config['ckpt_dir'] = args['prediction_ckpt_dir']
-    best_ckpt_info = train_prediction(train_dataloader_prediction, val_dataloader_prediction, config)
-    # config['policy_config']['action_dim'] = 14
-    best_epoch, min_val_loss, best_state_dict = best_ckpt_info
-    # save best checkpoint
-    # ckpt_path = os.path.join(ckpt_dir, f'prediction_model_best.ckpt')
-    # torch.save(best_state_dict, ckpt_path)
-    print(f'Prediction Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}')
+    mine_config = config.copy()
+    # prediction_config['policy_config']['action_dim'] = 512
+    mine_ckpt_dir = mine_config['ckpt_dir'] = args['mine_ckpt_dir'] + '_seed_' + str(seed)
+    mine_config['lr'] = mine_config['policy_config']['lr'] = args['lr_mine']
+    mine_ckpt_path = os.path.join(mine_ckpt_dir, f'mine_model_best.ckpt')
+    if not os.path.isdir(mine_ckpt_dir):
+        os.makedirs(mine_ckpt_dir)
+    if not load_mine:
+        best_ckpt_info = train_mine(train_dataloader_mine, val_dataloader_mine, mine_config)
+        best_epoch, min_val_loss, best_state_dict = best_ckpt_info
+        # save best checkpoint
+        torch.save(best_state_dict, mine_ckpt_path)
+        print(f'MINE Best ckpt, val loss {min_val_loss:.6f} @ epoch{best_epoch}')
 
     # return
     ###################load prediction model
@@ -181,35 +168,17 @@ def main(args):
     # predict_model_dir = '/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2_decay_1/prediction_model_epoch_1900_seed_1.ckpt'
     # predict_model_dir = '/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2_decay_1/prediction_model_epoch_1957_seed_1.ckpt'
     # config['policy_config']['action_dim'] = 512
-    predict_model = make_predict_model(config['policy_config'])
-    predict_model.load_state_dict(best_state_dict)
+    # predict_model = make_predict_model(mine_config['policy_config'])
+    # predict_model.load_state_dict(best_state_dict)
     # config['policy_config']['action_dim'] = 14
-    predict_model.cuda()
-
-    # # Evaluate the prediction model
-    # predict_model.eval()
-    # with torch.no_grad():
-    #     val_loss = 0
-    #     num_batches = 0
-    #     for batch in val_dataloader_prediction:
-    #         image_data, image_rep, qpos_data, action_data, is_pad = batch
-    #         image_data, image_rep, qpos_data, action_data, is_pad = image_data.cuda(), image_rep.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
-
-    #         _ ,L = predict_model(qpos_data, image_data, image_rep, is_pad)
-    #         val_loss += L['loss']
-    #         num_batches += 1
-
-    #     avg_val_loss = val_loss / num_batches
-    #     print(f"Prediction model validation loss: {avg_val_loss:.5f}")
-    #     # wandb.log({"prediction_model/val_loss": avg_val_loss})
-
-    # # Log other metrics if available in L
-    # # for key, value in L.items():
-    # #     if key != 'loss':
-    # #         wandb.log({f"prediction_model/{key}": value.item()})
-
-    # print("Prediction model evaluation completed.")
-    ####################
+    # predict_model.cuda()
+    mine_model = make_mine_estimator(mine_config['policy_config'])
+    if not load_mine:
+        mine_model.load_state_dict(best_state_dict)
+    else:
+        load_mine_ckpt_path = os.path.join(args['load_mine_ckpt_path'])
+        mine_model.load_state_dict(torch.load(load_mine_ckpt_path))
+    mine_model.cuda()
 
     config['policy_config']['action_dim'] = 14
     
@@ -217,7 +186,7 @@ def main(args):
     config['num_epochs'] = args['num_epochs']
     # config['action_dim'] = 14
 
-    best_ckpt_info = train_bc(train_dataloader_prediction, val_dataloader_prediction, config, predict_model)
+    best_ckpt_info = train_bc(train_dataloader, val_dataloader, config, mine_model)
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
 
     # save best checkpoint
@@ -241,13 +210,11 @@ def main(args):
     exit()
 
 
-def make_policy(policy_class, policy_config, predict_model=None):
+def make_policy(policy_class, policy_config):
     print(policy_config, "policy_config")
     # exit(0)
     if policy_class == 'ACT':
-        policy = ACTPolicy(policy_config)
-    elif policy_class == 'ACT2':
-        policy = ACTPolicy2(policy_config, pred_model=predict_model)
+        policy = ACTPolicy_PMI(policy_config)
     elif policy_class == 'CNNMLP':
         policy = CNNMLPPolicy(policy_config)
     else:
@@ -260,10 +227,12 @@ def make_predict_model(policy_config):
     # model = VAEPredictionModel(policy_config)
     return model
 
+def make_mine_estimator(policy_config):
+    model = MINEEstimator(policy_config)
+    return model
+
 def make_optimizer(policy_class, policy):
     if policy_class == 'ACT':
-        optimizer = policy.configure_optimizers()
-    elif policy_class == 'ACT2':
         optimizer = policy.configure_optimizers()
     elif policy_class == 'CNNMLP':
         optimizer = policy.configure_optimizers()
@@ -461,19 +430,24 @@ def eval_bc(config, ckpt_name, save_episode=True):
     return success_rate, avg_return
 
 
-def forward_pass_wo_prediction(data, policy):
-    image_data, _, qpos_data, action_data, is_pad = data
+def forward_pass_vanilla(data, policy):
+    image_data, qpos_data, action_data, is_pad = data
     image_data, qpos_data, action_data, is_pad = image_data.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
     return policy(qpos_data, image_data, action_data, is_pad) # TODO remove None
 
-def forward_pass_with_prediction(data, policy):
+def forward_pass_with_prediction(data, policy, model):
     image_data, image_features, qpos_data, action_data, is_pad = data
     image_data, qpos_data, image_features, action_data, is_pad = image_data.cuda(), qpos_data.cuda(), image_features.cuda(), action_data.cuda(), is_pad.cuda()
-    return policy(qpos_data, image_data, action_data, is_pad, image_features)
+    return policy(qpos_data, image_data, action_data, is_pad, model,image_features)
 # def eval_from_policy(policy):
 
+def forward_pass_with_mine(data, policy, model):
+    image_data, qpos_data, action_data, is_pad = data
+    image_data, qpos_data, action_data, is_pad = image_data.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
+    return policy(qpos_data, image_data, action_data, is_pad, model)
 
-def train_bc(train_dataloader, val_dataloader, config, predict_model):
+
+def train_bc(train_dataloader, val_dataloader, config, mine_model):
     num_epochs = config['num_epochs']
     ckpt_dir = config['ckpt_dir']
     seed = config['seed']
@@ -482,7 +456,7 @@ def train_bc(train_dataloader, val_dataloader, config, predict_model):
     use_predict_model = config['use_predict_model']
     set_seed(seed)
 
-    policy = make_policy(policy_class, policy_config, predict_model)
+    policy = make_policy(policy_class, policy_config)
     policy.cuda()
     optimizer = make_optimizer(policy_class, policy)
 
@@ -497,7 +471,7 @@ def train_bc(train_dataloader, val_dataloader, config, predict_model):
             policy.eval()
             epoch_dicts = []
             for batch_idx, data in enumerate(val_dataloader):
-                forward_dict = forward_pass_with_prediction(data, policy)
+                forward_dict = forward_pass_vanilla(data, policy)
                 epoch_dicts.append(forward_dict)
             epoch_summary = compute_dict_mean(epoch_dicts)
             validation_history.append(epoch_summary)
@@ -518,7 +492,7 @@ def train_bc(train_dataloader, val_dataloader, config, predict_model):
         policy.train()
         optimizer.zero_grad()
         for batch_idx, data in enumerate(train_dataloader):
-            forward_dict = forward_pass_with_prediction(data, policy)
+            forward_dict = forward_pass_with_mine(data, policy, mine_model)
             # backward
             loss = forward_dict['loss']
             loss.backward()
@@ -534,7 +508,7 @@ def train_bc(train_dataloader, val_dataloader, config, predict_model):
             summary_string += f'{k}: {v.item():.3f} '
         print(summary_string)
 
-        if epoch % 100 == 0:
+        if epoch % 200 == 0:
             ckpt_path = os.path.join(ckpt_dir, f'policy_epoch_{epoch}_seed_{seed}.ckpt')
             torch.save(policy.state_dict(), ckpt_path)
             plot_history(train_history, validation_history, epoch, ckpt_dir, seed)
@@ -569,7 +543,7 @@ def plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed):
         plt.savefig(plot_path)
     print(f'Saved plots to {ckpt_dir}')
 
-def train_prediction(train_dataloader, val_dataloader, config):
+def train_mine(train_dataloader, val_dataloader, config):
     num_epochs = config['num_epochs']
     ckpt_dir = config['ckpt_dir']
     seed = config['seed']
@@ -578,7 +552,7 @@ def train_prediction(train_dataloader, val_dataloader, config):
 
     set_seed(seed)
 
-    model = make_predict_model(policy_config)
+    model = make_mine_estimator(policy_config)
     model.cuda()
     optimizer = model.configure_optimizers()
 
@@ -590,58 +564,69 @@ def train_prediction(train_dataloader, val_dataloader, config):
         # validation
         with torch.inference_mode():
             model.eval()
-            epoch_dicts = []
+            epoch_loss_list = []
+            epoch_total_loss_list = []
+            pos_exp_list = []
+            neg_exp_list = []
             for batch_idx, data in enumerate(val_dataloader):
-                image_data, image_rep, qpos_data, action_data, is_pad = data
-                image_data, image_rep, qpos_data, action_data, is_pad = image_data.cuda(), image_rep.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
-                _, L = model(qpos_data, image_data, image_rep, is_pad, is_training=False)
-                epoch_dicts.append(L)
-            epoch_summary = compute_dict_mean(epoch_dicts)
+                # image_data, image_rep, qpos_data, action_data, is_pad = data
+                # image_data, image_rep, qpos_data, action_data, is_pad = image_data.cuda(), image_rep.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
+                # _, L = model(qpos_data, image_data, image_rep, is_pad, is_training=False)
+                # epoch_dicts.append(L)
+                image_data, qpos_data, action_data, timesteps = data
+                image_data, qpos_data, action_data, timesteps = image_data.cuda(), qpos_data.cuda(), action_data.cuda(), timesteps.cuda()
+                loss_dict, pos, neg = model(image_data, action_data, timesteps, qpos_data)
+                epoch_loss_list.append(loss_dict['loss'].item())
+                epoch_total_loss_list.append(loss_dict['total_loss'].item())
+                pos_exp_list.append(pos.mean().item())
+                neg_exp_list.append(neg.mean().item())
+            epoch_summary = {'loss': np.mean(epoch_loss_list), 'total_loss': np.mean(epoch_total_loss_list), 'pos_exp': np.mean(pos_exp_list), 'neg_exp': np.mean(neg_exp_list)}
 
             epoch_val_loss = epoch_summary['loss']
             if epoch_val_loss < min_val_loss:
                 min_val_loss = epoch_val_loss
                 best_ckpt_info = (epoch, min_val_loss, deepcopy(model.state_dict()))
         print(f'Val loss:   {epoch_val_loss:.10f}')
-        wandb.log({"Prediction/val_loss": epoch_val_loss})
+        wandb.log({"MINE/val_loss": epoch_val_loss})
         summary_string = ''
         for k, v in epoch_summary.items():
             summary_string += f'{k}: {v.item():.10f} '
-            wandb.log({f"Prediction/{k}": v.item()})
+            wandb.log({f"MINE/{k}": v.item()})
 
 
         optimizer.zero_grad()
         for batch_idx, data in enumerate(train_dataloader):
-            image_data, image_rep, qpos_data, action_data, is_pad = data
-            image_data, image_rep, qpos_data, action_data, is_pad = image_data.cuda(), image_rep.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
+            image_data, qpos_data, action_data, timesteps = data
+            image_data, qpos_data, action_data, timesteps = image_data.cuda(), qpos_data.cuda(), action_data.cuda(), timesteps.cuda()
             # loss.backward()
             # print(image_data.shape, image_rep.shape, qpos_data.shape, action_data.shape, is_pad.shape,end=" shapes of image_data, image_rep, qpos_data, action_data, is_pad\n")
-            _, L = model(qpos_data, image_data, image_rep, is_pad, is_training=True)
-            loss = L['loss']
+            loss_dict, _, _ = model(image_data, action_data, timesteps, qpos_data)
+            # loss = L['loss']
             # print(loss.item(), "loss\n")
+            loss = loss_dict['total_loss']
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
-            train_history.append(detach_dict(L))
-        epoch_summary = compute_dict_mean(train_history[(batch_idx+1)*epoch:(batch_idx+1)*(epoch+1)])
+            train_history.append(loss.item())
+        epoch_summary = {'loss': np.mean(train_history[(batch_idx+1)*epoch:(batch_idx+1)*(epoch+1)])} # this is total loss
         epoch_train_loss = epoch_summary['loss']
         print(f'Train loss: {epoch_train_loss:.10f}')
-        wandb.log({"Prediction/train_loss": epoch_train_loss})
+        wandb.log({"MINE/train_loss": epoch_train_loss})
         summary_string = ''
         for k, v in epoch_summary.items():
             summary_string += f'{k}: {v.item():.10f} '
-            wandb.log({f"Prediction/{k}": v.item()})
+            wandb.log({f"MINE/{k}": v.item()})
         print(summary_string)
         # Save the model after each epoch
         if epoch % 100 == 0:
-            ckpt_path = os.path.join(ckpt_dir, f'prediction_model_epoch_{epoch}_seed_{seed}.ckpt')
+            ckpt_path = os.path.join(ckpt_dir, f'mine_model_epoch_{epoch}_seed_{seed}.ckpt')
             torch.save(model.state_dict(), ckpt_path)
 
-    ckpt_path = os.path.join(ckpt_dir, f'prediction_model_last.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, f'mine_model_last.ckpt')
     torch.save(model.state_dict(), ckpt_path)
 
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
-    ckpt_path = os.path.join(ckpt_dir, f'prediction_model_epoch_{best_epoch}_seed_{seed}.ckpt')
+    ckpt_path = os.path.join(ckpt_dir, f'best_mine_model_epoch_{best_epoch}_seed_{seed}.ckpt')
     torch.save(best_state_dict, ckpt_path)
     print(f'Training finished:\nSeed {seed}, val loss {min_val_loss:.6f} at epoch {best_epoch}')
 

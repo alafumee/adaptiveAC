@@ -20,7 +20,8 @@ RUN apt-get update \
  pigz \
  git \
  libegl1 \
- git-lfs
+ git-lfs \
+ tmux
 
 # Force gcc 8 to avoid CUDA 10 build issues on newer base OS
 RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-8 8
@@ -33,8 +34,8 @@ RUN rm /usr/lib/x86_64-linux-gnu/libEGL_mesa.so.0 /usr/lib/x86_64-linux-gnu/libE
 COPY docker/nvidia_icd.json /usr/share/vulkan/icd.d/nvidia_icd.json
 COPY docker/10_nvidia.json /usr/share/glvnd/egl_vendor.d/10_nvidia.json
 
-RUN groupadd -g 1027 torchuser
-RUN useradd -r -u 1027 -g torchuser --create-home torchuser
+RUN groupadd -g 1017 torchuser
+RUN useradd -r -u 1016 -g torchuser --create-home torchuser
 
 ENV PATH="/home/torchuser/.local/bin:$PATH"
 
@@ -50,7 +51,7 @@ RUN conda create -n aloha python=3.8.10
 
 USER root
 
-RUN chown 1027:1027 /home/torchuser/.conda/envs/.conda_envs_dir_test
+RUN chown 1016:1017 /home/torchuser/.conda/envs/.conda_envs_dir_test
 
 USER torchuser
 

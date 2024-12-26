@@ -1,9 +1,9 @@
-program: imitate_episodes.py
+program: imitate_episodes_pmi.py
 method: grid
 
 parameters:
   task_name:
-    value: "sim_insertion_scripted"
+    value: "sim_insertion_human"
     # value: "sim_transfer_cube_scripted"
   policy_class:
     value: "ACT"
@@ -18,9 +18,12 @@ parameters:
     # value: "./ckpt/sim_insertion_scripted/Testchunk"
     # value: "/localdata/yy/zzzzworkspace/act/ckpt/sim_insertion_human_chunk100"
     # value: "/localdata/yy/zzzzworkspace/act/ckpt/sim_transfer_cube_scripted_run2"
-    value: "/home/torchuser/adaptiveAC/wandb_ckpt/vae_insertion_noreweight"
-  prediction_ckpt_dir:
-    value: "/home/torchuser/adaptiveAC/wandb_ckpt/vae_insertion_prediction_noreweight"
+    value: "/home/torchuser/adaptiveAC/wandb_ckpt/sim_insertion_human_newdataset_mine_newnewarch_test5_chunk100_selfnormalized "
+  mine_ckpt_dir:
+    value: "/home/torchuser/adaptiveAC/wandb_ckpt/sim_transfer_cube_human_newdataset_MINEnewnewarch_lr1e-4_test1_meansqreg"
+  load_mine_ckpt_path:
+    # value: "/home/torchuser/adaptiveAC/wandb_ckpt/sim_transfer_cube_human_newdataset_MINEnewnewarch_lr1e-4_test1_meansqreg_seed_1/mine_model_best.ckpt"
+    value: '/home/torchuser/adaptiveAC/wandb_ckpt/sim_insertion_human_newdataset_MINEnewnewarch_lr1e-4_test1_meansqreg_seed_1/mine_model_best.ckpt'
   hidden_dim:
     value: 512
   batch_size:
@@ -33,12 +36,12 @@ parameters:
     value: false
   num_epochs:
     value: 2000
-  num_epochs_prediction:
-    value: 50
+  num_epochs_mine:
+    value: 10000
   lr:
-    value: 1e-5
+    value: 1e-5 # 7e-6
   seed:
-    values: [1, 2, 3, 4, 5]
+    values: [2, 3]
   eval:
     value: false
   onscreen_render:
@@ -50,6 +53,18 @@ parameters:
   action_dim:
     value: 14
   reweight:
+    value: true
+  load_mine:
+    value: true
+  lr_mine:
+    value: 1e-4
+  lr_backbone:
+    value: 5e-6
+  mine_batch_size:
+    value: 50
+  self_normalize_weight:
+    value: true
+  weight_clip:
     value: false
 
 command:

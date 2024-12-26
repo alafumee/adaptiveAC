@@ -15,6 +15,9 @@ fuse.cfg
 
 *.ai
 
+*.txt
+*.png
+
 # Generation results
 results/
 
